@@ -86,7 +86,8 @@ dsh-github-kanban/
     - token 只走 `GITHUB_TOKEN`(用户纠正,原调研写名弃用):缺失时 status() 报布尔标志、面板出配置引导;错误文案经脱敏(token 值 → [redacted]);永不进日志或返回数据
     - 宿主→浏览器路线(实测决策,见 notes/dev-notes.md 差异 9):生成器装得到但是 monorepo 的 TS 工程分析器,弃;改走「宿主 SRC 回退(typertRemote 绑定 + v1 原型标记) + 浏览器手写 strict 占位清单经 ctx.remote.$mount」,零新增依赖
     - 浏览器半边:token 配置引导(无报错堆栈)、项目切换器(切换重拉)、按 Status 选项序分列、卡片三要素(标题/负责人/标签)、加载/错误/空态齐全,样式仍走带归属的 injectPluginStyles
-    - 自检:node scripts/smoke-load.mjs **58/58**(原 31 项重写扩到 58:远程清单、token 红线、GraphQL 纯度、字段映射、面板数据流);真实网络调用不进自检
+    - 自检:node scripts/smoke-load.mjs **60/60**(原 31 项重写扩到 58:远程清单、token 红线、GraphQL 纯度、字段映射、面板数据流;审查后 +2 先红后绿用例);真实网络调用不进自检
+    - 独立审查(code-reviewer,747d40d):修后可合,无 P0;2 条 P1 已修(888ccec 初始失败被兜底 ready 掩盖成空板 / d24c662 切换项目无请求序守卫);SRC 回退路线经 $G 源码逐处核验成立
     - **未做/待办**:真机看板与 GitHub 网页端一致性比对(需 1.4 + 用户提供 token 🔒);org 名下项目暂不可见(viewer.projectsV2 只覆盖 viewer 名下,遗留项)
 - [ ] **1.3 轮询刷新**:cordis-plugin-timer 每 30s 重拉,投影推送更新;面板折叠时降频或暂停
   - 完成标志:网页端改卡片,面板 30s 内跟上
