@@ -1,0 +1,13 @@
+# 凭据与本地环境:GitHub token 只走环境变量,任何 .credentials 类文件都不入仓(执行守则 2)
+.credentials
+.credentials.*
+*.credentials
+.env
+.env.*
+
+# 依赖与构建产物
+node_modules/
+dist/
+
+# 本机
+.DS_Store

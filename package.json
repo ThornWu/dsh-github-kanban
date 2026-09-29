@@ -1,0 +1,35 @@
+{
+  "name": "@local/thorn-github-kanban",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "dsh Web UI 插件:GitHub Projects(Projects v2)看板面板。同一个包同时提供宿主半边(数据服务)与浏览器半边(右栏 tab)",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "default": "./lib/client.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-session"
+      ],
+      "platform": "web"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+# dsh-github-kanban bundle:一个包同时挂宿主服务与浏览器半边(右栏看板 tab)。
+#
+# 只需一行 insert:client-modules 是按 **loader 行**去扫该包 package.json 的 dsh.client 声明的,
+# 扫到就把 exports["./client"] 提供给浏览器。所以不需要像 agent-team-profile 那样为 UI 单开一行
+# —— 那里是三个独立包,才有三行 insert。
+#
+# Phase 1.2 起在这里加 config:轮询间隔、token 环境变量名等(值一律不含凭据本身)。
+- insert:
+    - id: thorn-github-kanban
+      name: '@local/thorn-github-kanban'
