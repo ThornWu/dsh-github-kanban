@@ -113,6 +113,27 @@ $ node scripts/smoke-load.mjs
 - 真实 React 渲染、布局与视觉(自检里的 React 是替身,只跑组件函数与元素树);
 - HMR / 卸载时的样式回收。
 
+## 差异 9(Phase 1.2 实测):宿主→浏览器远程面的落地路线 —— 手写 wire 面 + SRC 回退,零新增依赖
+
+- 背景:差异 3 留了两条路 —— 引入 `dsh-typert-generator` 生成工件,或手写 wire schema。1.2 动工前实测如下。
+- **实测 1:生成器装得到,但用不了。** `npm view @deepseek-ai/dsh-typert-generator` 返回 `0.0.1-rc.1`(npm 缓存目录有 root 属主文件,需 `--cache` 指到可写目录)。装上后读其 README:它是 **monorepo 的 TypeScript 工程分析器**(`WorkspaceAnalyzer` 以 `tsconfig.host.json`/`tsconfig.client.json` 为种子,产出 FaceModel,再 emit zod 工件)。本包是纯 JS 零构建,为生成工件引入整条 TS 构建链 + `zod` 运行时依赖,与「零新增依赖」目标冲突,放弃。
+- **实测 2:gateway 有官方 SRC 回退,宿主侧可以不注册 strict 描述符。** `dsh-api-gateway/lib/index.js` 的 `resolveDescriptor`:strict 定义(`ctx.typert.local.get`)查不到时走 `resolveSrcDescriptor` —— 从 `ctx.reflect.props` 里找带 `typertRemote` 绑定的服务,用 `@Remote` 原型标记 + `Function.prototype.toString` 解析方法参数名,现场生成 `src-json` 编解码的描述符(只做 JSON 安全校验,不调 zod)。**该回退无任何 gating**(没有配置开关),是插件的一等公民路径。
+- **实测 3:浏览器侧的 remote 面由 `ctx.remote.$mount(contribution)` 装。** `dsh-api-remotes/lib/client.js` 对核心包就是 `$mount(内联的 TYPERT_REMOTE 清单)`;`dsh-api-gateway/lib/client.js` 的 `validateContribution` 对每个 descriptor 要求 strict 编解码(`requireStrictInputs`),但**客户端从不调用 `codec.create()`**(全文无 `codec.create` 调用点),只检查 `mode === "strict"`。于是手写清单可以用无害透传占位,不需要 zod。
+- **落地(本仓 lib/index.js + lib/client.js)**:
+  - 宿主:`GithubKanbanService` 类实例经 `ctx.provide("githubKanban", …)` 注册(cordis `reflect.provide` 即 `type:"service"`,SRC 扫描可见);实例带冻结的 `typertRemote = { service, serviceKey, namespace }`(与 `bindTypertRemote` 逐字段一致),原型上挂 v1 版 Remote 方法标记(键字符串 `@deepseek-ai/dsh-typert-protocol/remote-methods`,与 protocol 源码常量一致)。三个方法 `status / listProjects / getBoard(request)` 都是简单标识符参数的原型方法。
+  - 浏览器:apply 时 `await ctx.remote.$mount({ package, descriptors })`,descriptor 形状对照 `dsh-typert-registry` 的 `validateInvocation`(id/service/namespace/method/invocation/parameters/result);result 是编码本体 `{mode:"strict", typeSymbol, create}`(注意:**result 直接是 codec**,参数才是 `{name, wire, source, codec}`)。
+- **风险与升级核对**:v1 标记描述符与绑定形状是 protocol 内部 wire 契约,dsh 升级时对照 `$G/dsh-typert-protocol/lib/index.js`(`REMOTE_METHOD_DESCRIPTOR`、`mark()`、`bindTypertRemote`)与 `$G/dsh-api-gateway/lib/index.js`(`resolveSrcDescriptor`)。若未来 SRC 回退被收紧,再补手写 strict 描述符(需引入 zod,dsh 运行时自带 zod 4.4.3)。
+- 附:npm 缓存 EPERM(`~/.npm/_cacache` root 属主)会波及一切 npm 命令,`npm install` 会静默**向上找到最近的 package.json 落包**(probe 目录 npm init 失败时包装进了本仓根目录,已回滚)——以后探测一律用 `$TMPDIR` 下的独立目录。
+
+## Phase 1.2 自检结果(静态,零依赖,真实网络不进自检)
+
+```
+$ node scripts/smoke-load.mjs
+58/58 通过
+```
+
+新增覆盖:远程清单(3 direct 方法 + strict 占位编解码)、宿主 SRC 面(typertRemote 绑定 + v1 标记)、token 红线(缺失路径结构化错误不抛堆栈、token 只进 Authorization 头、错误文案抹除 token 值、仓库无旧变量名残留)、字段映射(列序 = Status 选项序、空列保留、兜底列、卡片三要素)、面板数据流(mini React 替身按 React 语义驱动真实异步链:token 引导 / 项目切换重拉 / 分列渲染 / 错误态无堆栈)。
+
 ## 升级 dsh 时的核对清单
 
 1. `$G/dsh-client-ui-sidebar-right/lib/types/client/contract/slots.d.ts` 与 `tab-registry.d.ts`(座位 kind/key 与 tab 定义字段)。
