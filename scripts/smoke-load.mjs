@@ -491,6 +491,19 @@ const sampleBoard = {
   check("看板:切换到 #9 后重拉 getBoard({projectNumber:9})", getCalls.some((r) => r?.projectNumber === 9), JSON.stringify(getCalls));
 }
 
+// 5c2. 初始 getBoard 失败(如 401)→ phase 应为 error,不得展示成空看板
+{
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }, { id: "p2", number: 9, title: "Beta" }] }),
+    getBoard: async () => ({ ok: false, error: { code: "http_error", message: "GitHub API HTTP 401。" } }),
+  };
+  const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
+  const text = textOf(tree);
+  check("初始 getBoard 失败:显示错误态而非空看板", text.includes("读取失败") && text.includes("[http_error]") && !text.includes("该项目还没有看板条目") && !text.includes("viewer 名下没有"), text.match(/读取失败[^•]*/)?.[0]?.slice(0, 60));
+  // 注:错误态吞掉切换器属已知 P2(loadBoard 失败时工具栏被错误段整体替换),本轮不修,记 TODO 1.3。
+}
+
 // 5d. 加载失败 → 结构化错误态(含 code,不含堆栈)
 {
   const boardApi = {
