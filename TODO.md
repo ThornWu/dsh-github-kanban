@@ -90,6 +90,7 @@ dsh-github-kanban/
     - **未做/待办**:真机看板与 GitHub 网页端一致性比对(需 1.4 + 用户提供 token 🔒);org 名下项目暂不可见(viewer.projectsV2 只覆盖 viewer 名下,遗留项)
 - [ ] **1.3 轮询刷新**:cordis-plugin-timer 每 30s 重拉,投影推送更新;面板折叠时降频或暂停
   - 完成标志:网页端改卡片,面板 30s 内跟上
+  - 顺带清理(1.2 审查遗留 P2,本轮不修):错误态吞掉工具栏(切换器/刷新按钮不可见,应保留);刷新完成态缺 totalCount 口径显示;mapBoard 对缺字段/畸形节点无守卫;fields(first:40) 截断或 Status 字段被改名时静默退化为「全部」单列、应给提示
 - [ ] **1.4 装入 profile**:`@local/thorn-github-kanban` 链接进 `~/.dsh/profiles/web`,重启验证
   - 完成标志:全新启动 dsh web,插件自动生效
 

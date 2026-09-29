@@ -504,6 +504,35 @@ const sampleBoard = {
   // 注:错误态吞掉切换器属已知 P2(loadBoard 失败时工具栏被错误段整体替换),本轮不修,记 TODO 1.3。
 }
 
+// 5c3. 快速切换项目:慢的旧响应不得覆盖新项目看板(请求序守卫)
+{
+  const boards = {
+    7: { project: { id: "p1", number: 7, title: "Alpha" }, hasStatusField: true, columns: [{ optionId: "o1", name: "AlphaColumn", items: [{ id: "a1", title: "Alpha 的卡", url: undefined, assignees: [], labels: [], statusOptionId: "o1" }] }] },
+    9: { project: { id: "p2", number: 9, title: "Beta" }, hasStatusField: true, columns: [{ optionId: "o2", name: "BetaColumn", items: [{ id: "b1", title: "Beta 的卡", url: undefined, assignees: [], labels: [], statusOptionId: "o2" }] }] },
+  };
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }, { id: "p2", number: 9, title: "Beta" }] }),
+    // #9 的响应比 #7 慢:无守卫时后到的旧响应会覆盖新看板
+    getBoard: async ({ projectNumber }) => {
+      await sleep(projectNumber === 9 ? 50 : 5);
+      return { ok: true, board: boards[projectNumber] };
+    },
+  };
+  // 组件的 react 是共享 miniReact 替身,交互必须在同一个 runtime 里做。
+  miniReact.reset();
+  const tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi), 40);
+  const select = findFirst(tree, (node) => node.type === "select");
+  select.props.onChange({ target: { value: "9" } }); // 先点 #9(慢)
+  const tree2 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  const select2 = findFirst(tree2, (node) => node.type === "select");
+  select2.props.onChange({ target: { value: "7" } }); // 再点 #7(快,#7 先回,#9 后回)
+  const tree3 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi), 80);
+  const text3 = textOf(tree3);
+  check("快速切换:最终展示的是后选项目(#7 Alpha)的看板", text3.includes("AlphaColumn") && !text3.includes("BetaColumn"), text3.match(/(AlphaColumn|BetaColumn)/g)?.join(","));
+}
+
 // 5d. 加载失败 → 结构化错误态(含 code,不含堆栈)
 {
   const boardApi = {
