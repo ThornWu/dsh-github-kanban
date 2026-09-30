@@ -97,6 +97,8 @@ dsh-github-kanban/
   - 新增顺带清理(R5 备注,P2,1.4 顺带):inFlight 悬挂请求无墙钟上限,异常停摆时轮询永久暂停(lib/client.js:488/:561);setInterval 兜底分支路径前提未注明(:713-715);错误态轮询重试先清 errorText 致 30s 一次文案闪烁(:490)
 - [ ] **1.4 装入 profile**:`@local/thorn-github-kanban` 链接进 `~/.dsh/profiles/web`,重启验证
   - 完成标志:全新启动 dsh web,插件自动生效
+  - 进展(2026-09-30):链接+bundle 已装(PID 实测装载,Plugins 面板 ON);真机首验发现 inject 缺声明 bug(cordis 嵌套服务全名查清单)→ 修复并迁移入口至左侧全局面板(sidebar.panellist+main,Thorn 需求:跨项目面板),R6/R7 审毕待合;**剩:合并后带 GITHUB_TOKEN 重启 + 真实数据一致性核对**
+  - 新增顺带清理(R7 备注,P2):lib/client.js:573 注释措辞与 ok 恒真实现不完全一致(现实不可达,顺手改)
 
 ## Phase 2 — 双向联动:拖卡写回(P1)
 
