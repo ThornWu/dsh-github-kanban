@@ -355,6 +355,35 @@ check("宿主激活日志不含任何 token 值(只报配置与否)", hostLogs.l
   check("getBoard():token 缺失同上", noTokenBoard?.ok === false && noTokenBoard.error?.code === "token_missing");
   const badInput = await new hostMod.GithubKanbanService({ env: { GITHUB_TOKEN: "t" } }).getBoard({ projectNumber: -3 });
   check("getBoard():非法 projectNumber 返回 input_invalid", badInput?.ok === false && badInput.error?.code === "input_invalid", JSON.stringify(badInput));
+  // 生产兜底(2026-10-01 真机首验教训):apply() 建服务是空 deps,env 必须回退 process.env。
+  {
+    const previous = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = "smoke-probe-token";
+    try {
+      const prodShape = new hostMod.GithubKanbanService();
+      const withToken = await prodShape.status();
+      check(
+        "status():空 deps 回退 process.env(置位后 tokenConfigured=true)",
+        withToken?.ok === true && withToken.status?.tokenConfigured === true,
+        JSON.stringify(withToken),
+      );
+      let seenAuth = "";
+      await hostMod.ghGraphQL("query { viewer { login } }", {}, {
+        fetchImpl: async (_url, init) => {
+          seenAuth = init.headers.Authorization;
+          return { ok: true, json: async () => ({ data: {} }) };
+        },
+      });
+      check(
+        "ghGraphQL():空 deps 回退 process.env 取 token,只进 Authorization 头",
+        seenAuth === "Bearer smoke-probe-token",
+        seenAuth === "Bearer smoke-probe-token" ? "已带探测值(非真实凭据)" : "unexpected",
+      );
+    } finally {
+      if (previous === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previous;
+    }
+  }
 }
 
 // GraphQL 请求纯度:token 只进 Authorization 头,查询串与 body 不含 token
