@@ -7,7 +7,7 @@
  *   1. package.json:dsh.client 声明、exports["./client"]、bundle patch 齐全;
  *   2. lib/client.js:注册形态正确(load({id, factory}))、id 等于包名、零副作用:
  *      物化时才注入样式,且样式带插件归属;
- *   3. apply(ctx):按 keyed 规则注册 1 个 tab 类型 + 2 个座位,并向 ctx.remote.$mount
+ *   3. apply(ctx):注册左栏 panellist 入口 + 主区 main 座位(跨会话全局面板),并向 ctx.remote.$mount
  *      挂上手写远程清单(3 个 direct 方法,strict 编解码);
  *   4. lib/index.js:宿主 githubKanban 服务带 typertRemote 绑定 + 原型 Remote 标记;
  *      token 缺失路径不抛堆栈、不泄漏;GraphQL 查询串不含 token;字段映射列序正确;
@@ -36,7 +36,7 @@ const CLIENT_ENTRY = typeof pkg.exports?.["./client"] === "string" ? pkg.exports
 const HOST_ENTRY = typeof pkg.exports?.["."] === "string" ? pkg.exports["."] : pkg.exports?.["."]?.default;
 const PATCH = pkg.dsh?.bundle?.patch;
 const NS = "thorn-github-kanban";
-const TAB_ID = `${PACKAGE_ID}/board`;
+const PANEL_ID = "github-kanban";
 const SERVICE_KEY = "githubKanban";
 
 check("package.json:dsh.client.platform = web", pkg.dsh?.client?.platform === "web");
@@ -174,20 +174,25 @@ try {
 }
 check("导出 apply 与 inject", typeof mod.apply === "function" && Array.isArray(mod.inject));
 check(
-  "inject 声明客户端服务(slots/locale/sidebarRightTabs/remote)",
-  ["slots", "locale", "sidebarRightTabs", "remote"].every((s) => mod.inject.includes(s)),
+  "inject 声明客户端服务(slots/locale/remote)",
+  ["slots", "locale", "remote"].every((s) => mod.inject.includes(s)),
   `inject=${JSON.stringify(mod.inject)}`,
 );
 check("inject 声明 timer 服务(轮询调度用 client runner 内建 timer Service)", mod.inject.includes("timer"), `inject=${JSON.stringify(mod.inject)}`);
+// 真机 inject bug 回归(Phase 1.4):cordis 对嵌套服务按全名查 inject 清单,替身不强制,必须显式断言。
+check(
+  "inject 声明嵌套服务全名 remote.githubKanban(与 timer 同款断言口径)",
+  mod.inject.includes("remote.githubKanban"),
+  `inject=${JSON.stringify(mod.inject)}`,
+);
 check(
   "样式随物化注入且带插件归属",
   styleTags.length === 1 && styleTags[0].dataset.plugin === PACKAGE_ID && typeof styleTags[0].dataset.pluginCss === "string" && styleTags[0].textContent.includes(".tgk-root"),
   `tags=${styleTags.length}`,
 );
 
-// ── 3. apply(ctx):座位、tab 类型、远程清单 ──────────────────────────────────
+// ── 3. apply(ctx):座位、全局面板注册、远程清单 ──────────────────────────────
 const seats = [];
-const tabTypes = [];
 const effectLabels = [];
 const dictsByNs = new Map();
 const locale = {
@@ -216,8 +221,7 @@ const ctx = {
   },
   sidebarRightTabs: {
     register: (definition) => {
-      tabTypes.push(definition);
-      return () => {};
+      throw new Error(`sidebarRightTabs.register 不应再被调用(右栏入口已迁移):${definition?.id}`);
     },
   },
   remote: {
@@ -235,18 +239,41 @@ try {
   die(`apply(ctx) 失败:${error.message}`);
 }
 
-check("register 生命周期挂在 ctx.effect 上(文案 + tab 类型)", effectLabels.length === 2, effectLabels.join(" | "));
-check("注册了 1 个 tab 类型", tabTypes.length === 1);
-const tabType = tabTypes[0] ?? {};
-check("tab 类型 id 与座位 key 同一来源", tabType.id === TAB_ID, `id=${tabType.id}`);
-check("tab 类型是页面型(无 patterns)", typeof tabType.kind === "string" && tabType.patterns === undefined, `kind=${tabType.kind}`);
-check("tab 类型带 title 与 guide 入口", typeof tabType.title === "function" && Array.isArray(tabType.guide) && typeof tabType.guide[0]?.title === "function" && tabType.guide[0]?.title() === "GitHub 看板");
+check("register 生命周期挂在 ctx.effect 上(文案)", effectLabels.length === 1, effectLabels.join(" | "));
 check(
-  "注册 2 个 keyed 座位(body + title)",
-  seats.length === 2 && seats.map((s) => s.seat).join(",") === "sidebar.right.pane.tab,sidebar.right.pane.tab.title",
+  "注册 2 个座位(左栏 panellist 入口 + 主区 main 页面)",
+  seats.length === 2 && [...seats.map((s) => s.seat)].sort().join(",") === "main,sidebar.panellist",
   seats.map((s) => s.seat).join(","),
 );
-check("座位 key = tab 类型 id,locale = 命名空间", seats.every((s) => s.options.key === TAB_ID && s.options.locale === NS));
+const mainSeat = seats.find((s) => s.seat === "main");
+const panellistSeat = seats.find((s) => s.seat === "sidebar.panellist");
+check(
+  "main 座位绑定 key = 面板 id,locale = 命名空间(与 schedule 同型)",
+  mainSeat !== undefined && mainSeat.options.key === PANEL_ID && mainSeat.options.locale === NS,
+  `key=${mainSeat?.options?.key}`,
+);
+const mainInjectProps = mainSeat?.options?.inject?.();
+check(
+  "main 座位 inject 面提供 identity / board / polling",
+  mainInjectProps !== undefined && mainInjectProps.identity?.panelId === PANEL_ID && typeof mainInjectProps.board?.getBoard === "function" && typeof mainInjectProps.polling?.setInterval === "function",
+  JSON.stringify(Object.keys(mainInjectProps ?? {})),
+);
+check(
+  "panellist 注册带 id / order / label(与 Automation tasks 同型,order 20 > 10)",
+  panellistSeat !== undefined && panellistSeat.options.id === PANEL_ID && panellistSeat.options.order === 20 && typeof panellistSeat.options.label === "function" && panellistSeat.options.label() === "GitHub 看板",
+  `id=${panellistSeat?.options?.id} order=${panellistSeat?.options?.order}`,
+);
+check("panellist 入口注册不带 key(入口派发走 ctx.layout.selectPanel(id))", panellistSeat !== undefined && panellistSeat.options.key === undefined, `key=${panellistSeat?.options?.key}`);
+// 迁移红线:右栏两处注册与 sidebarRightTabs 依赖必须移除干净(源级断言,防回潮)。
+{
+  const clientSource = readFileSync(join(root, CLIENT_ENTRY), "utf8");
+  check(
+    "右栏注册已移除且无残留引用(sidebar.right.pane.tab / sidebarRightTabs / ui-sidebar-right)",
+    !clientSource.includes("sidebar.right.pane.tab") && !clientSource.includes("sidebarRightTabs") &&
+      !JSON.stringify(pkg.dsh?.client?.inject ?? []).includes("dsh-client-ui-sidebar-right"),
+    "client.js + package.json 均无残留",
+  );
+}
 const zhKeys = Object.keys(dictsByNs.get(NS)?.zh ?? {}).sort();
 const enKeys = Object.keys(dictsByNs.get(NS)?.en ?? {}).sort();
 check("zh/en 字典逐键对照", zhKeys.length > 0 && zhKeys.join(",") === enKeys.join(","), `zh=${zhKeys.length} en=${enKeys.length}`);
@@ -511,8 +538,7 @@ check("宿主激活日志不含任何 token 值(只报配置与否)", hostLogs.l
 }
 
 // ── 5. 渲染:mini hook 运行时驱动真实异步数据流 ──────────────────────────────
-const bodySeat = seats.find((s) => s.seat === "sidebar.right.pane.tab");
-const titleSeat = seats.find((s) => s.seat === "sidebar.right.pane.tab.title");
+const bodySeat = mainSeat; // 看板 body 现挂在 main 座位(视觉零改动迁移)
 const t = locale.bind(NS);
 
 const textOf = (node) => {
@@ -546,7 +572,7 @@ const makeProps = (state, boardApi, identity, polling) => ({
   useTabInfo: () => ({ panel: { id: "pane-1" }, tab: { id: "tab-1" } }),
   useSessions: (selector) => selector(state.list),
   useProjection: (key, selector) => selector(key === "modelSelection" ? { next: { model: state.model } } : undefined),
-  identity: identity ?? { packageId: PACKAGE_ID, ns: NS, tabId: TAB_ID, tabKind: "githubKanbanBoard", seats: ["sidebar.right.pane.tab", "sidebar.right.pane.tab.title"], remote: true },
+  identity: identity ?? { packageId: PACKAGE_ID, ns: NS, panelId: PANEL_ID, seats: ["sidebar.panellist", "main"], remote: true },
   board: boardApi,
   polling,
 });
@@ -583,7 +609,7 @@ const sampleBoard = {
   check("面板随投影变化(两份快照读数不同)", textA !== textB && textA.length > 0 && textB.length > 0);
   check("读数含会话总数 1→3", textA.includes(" 1 ") && textB.includes(" 3 "));
   check("读数含投影模型名", textA.includes("glm-5.3") && textB.includes("deepseek-v4"));
-  check("自检区标出本插件占位", textA.includes("sidebar.right.pane.tab + sidebar.right.pane.tab.title"));
+  check("自检区标出本插件占位", textA.includes("sidebar.panellist + main"));
 }
 
 // 5b. token 未配置 → 配置引导,不显示报错堆栈
@@ -827,8 +853,15 @@ const makePolling = (isVisible = () => true) => {
   check("totalCount:口径缺席时退回列合计「共 2 张卡」且无截断提示", textLocal.includes("共 2 张卡") && !textLocal.includes("已加载"), textLocal.match(/共\s*\d+\s*张卡|已加载[^•]*/g)?.join(" | "));
 }
 
-const titleText = textOf(titleSeat.component({ t, useSessions: (selector) => selector(stateB.list) })).replace(/\s+/g, " ").trim();
-check("title 座位渲染出 chip 且带会话数", titleText.includes("GitHub 看板") && titleText.includes("3"), titleText);
+// panellist 入口图标:svg 字形(朴素、aria-hidden、不吃文字内容),label 由注册项自己提供。
+{
+  const iconTree = panellistSeat.component({ size: 16 });
+  check(
+    "panellist 图标渲染 svg 字形(aria-hidden,不吃文案)",
+    iconTree?.type === "svg" && iconTree?.props?.["aria-hidden"] === "true" && iconTree?.props?.viewBox === "0 0 16 16",
+    `type=${iconTree?.type}`,
+  );
+}
 
 // ── 6. 报告 ──────────────────────────────────────────────────────────────────
 let failedCount = 0;
