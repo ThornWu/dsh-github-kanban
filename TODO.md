@@ -89,11 +89,12 @@ dsh-github-kanban/
     - 自检:node scripts/smoke-load.mjs **60/60**(原 31 项重写扩到 58:远程清单、token 红线、GraphQL 纯度、字段映射、面板数据流;审查后 +2 先红后绿用例);真实网络调用不进自检
     - 独立审查(code-reviewer,747d40d):修后可合,无 P0;2 条 P1 已修(888ccec 初始失败被兜底 ready 掩盖成空板 / d24c662 切换项目无请求序守卫);SRC 回退路线经 $G 源码逐处核验成立
     - **未做/待办**:真机看板与 GitHub 网页端一致性比对(需 1.4 + 用户提供 token 🔒);org 名下项目暂不可见(viewer.projectsV2 只覆盖 viewer 名下,遗留项)
-- [ ] **1.3 轮询刷新**:cordis-plugin-timer 每 30s 重拉,投影推送更新;面板折叠时降频或暂停
-  - 完成标志:网页端改卡片,面板 30s 内跟上
-  - 顺带清理(1.2 审查遗留 P2,本轮不修):错误态吞掉工具栏(切换器/刷新按钮不可见,应保留);刷新完成态缺 totalCount 口径显示;mapBoard 对缺字段/畸形节点无守卫;fields(first:40) 截断或 Status 字段被改名时静默退化为「全部」单列、应给提示
+- [x] **1.3 轮询刷新**:30s 重拉走注入式 polling(ctx.interval 官方路线优先,setInterval 兜底),投影经既有 setState 链更新;不可见(aria-hidden 探针,与宿主可见性判定同源)跳过本轮=暂停,inFlight 节流
+  - 完成标志:网页端改卡片,面板 30s 内跟上(smoke 已以替身 timer 断言重拉/暂停/节流链路;真机表现属 1.4 装入后验证)
+  - 顺带清理(1.2 审查遗留 P2)——已销账(0f85efe,R5 审确认):错误态吞掉工具栏;刷新完成态 totalCount 口径;mapBoard 守卫;fields 截断/Status 改名静默退化
   - 已销账(R3 终审 5 条 P2 → cfee69f 修复,R4 增量审确认):graphql_error 脱敏 / 截断先于脱敏并抹跨界前缀 / 项目列表 pageInfo 分页拉全 / isInitial 死参数 / selected 失配禁用占位
-  - 新增顺带清理(R4 备注,P2):sanitizeError 双遍 redact 第二遍冗余且注释「跑两遍替换兜底」与事实不符(lib/index.js:115,单遍即净);≥4 字符巧合后缀误伤面维持现状、仅记录(:106)
+  - 已销账(R4 备注 P2 → 0f85efe,R5 确认):双遍 redact 改单遍、注释同步;≥4 字符巧合后缀误伤面维持现状仅记录
+  - 新增顺带清理(R5 备注,P2,1.4 顺带):inFlight 悬挂请求无墙钟上限,异常停摆时轮询永久暂停(lib/client.js:488/:561);setInterval 兜底分支路径前提未注明(:713-715);错误态轮询重试先清 errorText 致 30s 一次文案闪烁(:490)
 - [ ] **1.4 装入 profile**:`@local/thorn-github-kanban` 链接进 `~/.dsh/profiles/web`,重启验证
   - 完成标志:全新启动 dsh web,插件自动生效
 
