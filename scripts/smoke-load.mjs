@@ -334,6 +334,72 @@ check("宿主激活日志不含任何 token 值(只报配置与否)", hostLogs.l
   );
 }
 
+// 4b. graphql_error 分支文案脱敏(先红后绿:旧代码该分支不过 sanitizeError)
+{
+  const SECRET = "ghp_graphql_branch_secret";
+  const result = await hostMod.ghGraphQL("query { viewer { login } }", {}, {
+    env: { GITHUB_TOKEN: SECRET },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ errors: [{ message: `Bad token ${SECRET}` }, { message: "second segment" }] }),
+    }),
+  });
+  check(
+    "graphql_error:多段 message 拼接后整体脱敏(不残留 token,标记完整)",
+    result.ok === false && result.error?.code === "graphql_error" && !JSON.stringify(result).includes(SECRET) &&
+      result.error.message.includes("[redacted]") && result.error.message.includes("second segment"),
+    JSON.stringify(result),
+  );
+}
+
+// 4c. 脱敏与截断的顺序:token 横跨 300 字符边界时不残留、标记不被截半(先红后绿)
+{
+  const SECRET = "ghp_boundary_secret_token_value_9f3ab2";
+  const message = `${"a".repeat(295)}${SECRET}${"b".repeat(50)}`;
+  const result = await hostMod.ghGraphQL("query { viewer { login } }", {}, {
+    env: { GITHUB_TOKEN: SECRET },
+    fetchImpl: async () => {
+      throw new Error(message);
+    },
+  });
+  const text = result.error?.message ?? "";
+  check(
+    "sanitizeError:token 横跨 300 边界时先截断后脱敏,无明文残留且标记完整",
+    result.ok === false && result.error?.code === "network_error" && !text.includes(SECRET) &&
+      !text.includes(SECRET.slice(0, 10)) && text.includes("[redacted]"),
+    `len=${text.length} tail=${JSON.stringify(text.slice(-24))}`,
+  );
+}
+
+// 4d. 项目列表分页:>30 项目时按 pageInfo 拉全(先红后绿:旧代码只拉第一页)
+{
+  const pages = [
+    {
+      nodes: Array.from({ length: 30 }, (_, i) => ({ id: `p${i}`, number: i + 1, title: `P${i + 1}`, updatedAt: "2026-09-29T00:00:00Z" })),
+      pageInfo: { hasNextPage: true, endCursor: "c1" },
+    },
+    {
+      nodes: Array.from({ length: 5 }, (_, i) => ({ id: `p${i + 30}`, number: i + 31, title: `P${i + 31}`, updatedAt: "2026-09-29T00:00:00Z" })),
+      pageInfo: { hasNextPage: false },
+    },
+  ];
+  const calls = [];
+  const service = new hostMod.GithubKanbanService({
+    env: { GITHUB_TOKEN: "t" },
+    fetchImpl: async (url, init) => {
+      calls.push(JSON.parse(init.body));
+      return { ok: true, status: 200, json: async () => ({ data: { viewer: { projectsV2: pages[calls.length - 1] } } }) };
+    },
+  });
+  const list = await service.listProjects();
+  check(
+    "listProjects:>30 项目按 pageInfo 分页拉全(2 页 35 个,第二页带 after 游标)",
+    list.ok === true && list.projects?.length === 35 && calls.length === 2 && calls[1]?.variables?.after === "c1",
+    `count=${list.projects?.length} calls=${calls.length}`,
+  );
+}
+
 // 字段映射:列序 = Status 选项序;空列保留;卡片三要素
 {
   const statusOptions = [
@@ -531,6 +597,37 @@ const sampleBoard = {
   const tree3 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi), 80);
   const text3 = textOf(tree3);
   check("快速切换:最终展示的是后选项目(#7 Alpha)的看板", text3.includes("AlphaColumn") && !text3.includes("BetaColumn"), text3.match(/(AlphaColumn|BetaColumn)/g)?.join(","));
+}
+
+// 5c4. selected 项目不在当前列表(如刷新后被删):select 回退空值并给出「项目已不可用」禁用项
+{
+  const board7 = { project: { id: "p1", number: 7, title: "Alpha" }, hasStatusField: true, columns: [{ optionId: "o1", name: "AlphaColumn", items: [] }] };
+  const board9 = { project: { id: "p2", number: 9, title: "Beta" }, hasStatusField: true, columns: [{ optionId: "o2", name: "BetaColumn", items: [] }] };
+  // 当前列表只剩 #7(模拟刷新后 #9 被删);selected 仍是 9 → 失配
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
+    getBoard: async ({ projectNumber }) => ({ ok: true, board: projectNumber === 9 ? board9 : board7 }),
+  };
+  // 组件的 react 是共享 miniReact 替身,交互必须在同一个 runtime 里做。
+  miniReact.reset();
+  let tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  const select = findFirst(tree, (node) => node.type === "select");
+  select.props.onChange({ target: { value: "9" } }); // selected=9 不在当前 options 里
+  tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  const select2 = findFirst(tree, (node) => node.type === "select");
+  const text = textOf(tree);
+  check(
+    "切换器:selected 项目不在列表时回退空值并提示「项目已不可用」",
+    select2 !== undefined && select2.props.value === "" && text.includes("项目已不可用"),
+    `value=${select2?.props?.value}`,
+  );
+  const disabledOption = findAll(select2, (node) => node.type === "option" && node.props?.disabled === true)[0];
+  check(
+    "切换器:失配占位是禁用 option,不可被选中",
+    disabledOption !== undefined && textOf(disabledOption).includes("项目已不可用"),
+    textOf(disabledOption ?? "").trim(),
+  );
 }
 
 // 5d. 加载失败 → 结构化错误态(含 code,不含堆栈)
