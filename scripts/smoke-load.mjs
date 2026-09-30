@@ -178,6 +178,7 @@ check(
   ["slots", "locale", "sidebarRightTabs", "remote"].every((s) => mod.inject.includes(s)),
   `inject=${JSON.stringify(mod.inject)}`,
 );
+check("inject 声明 timer 服务(轮询调度用 client runner 内建 timer Service)", mod.inject.includes("timer"), `inject=${JSON.stringify(mod.inject)}`);
 check(
   "样式随物化注入且带插件归属",
   styleTags.length === 1 && styleTags[0].dataset.plugin === PACKAGE_ID && typeof styleTags[0].dataset.pluginCss === "string" && styleTags[0].textContent.includes(".tgk-root"),
@@ -435,6 +436,80 @@ check("宿主激活日志不含任何 token 值(只报配置与否)", hostLogs.l
   check("映射:缺 Status 字段退化为单列「全部」", noField.board.hasStatusField === false && noField.board.columns.length === 1 && noField.board.columns[0].name === "全部");
 }
 
+// 4e. statusFieldHint 纯函数:四个口径(缺失提示用,不再无声退化)
+{
+  check(
+    "statusFieldHint:not_found / possibly_renamed / fields_truncated / 已找到=null",
+    hostMod.statusFieldHint([], false) === "not_found" &&
+      hostMod.statusFieldHint([{ name: "State", options: [] }], false) === "possibly_renamed" &&
+      hostMod.statusFieldHint(Array.from({ length: 40 }, (_, i) => ({ name: `f${i}` })), false) === "fields_truncated" &&
+      hostMod.statusFieldHint([{ name: "Status", options: [] }], true) === null,
+    JSON.stringify([hostMod.statusFieldHint([], false), hostMod.statusFieldHint([{ name: "State", options: [] }], false)]),
+  );
+}
+
+// 4f. getBoard 集成:Status 改名 → hint + 单列;totalCount 口径 = 服务端 items.totalCount
+{
+  const fields = [{ id: "f_state", name: "State", options: [{ id: "o1", name: "A" }] }];
+  const service = new hostMod.GithubKanbanService({
+    env: { GITHUB_TOKEN: "t" },
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { viewer: { projectV2: { id: "p1", number: 7, title: "Alpha", fields: { nodes: fields }, items: { totalCount: 12, pageInfo: { hasNextPage: false }, nodes: [] } } } } }),
+    }),
+  });
+  const result = await service.getBoard({ projectNumber: 7 });
+  check(
+    "getBoard:Status 改名 → possibly_renamed 提示 + 单列「全部」+ totalCount=12 / fetchedCount=0",
+    result.ok === true && result.board.hasStatusField === false && result.board.statusFieldHint === "possibly_renamed" &&
+      result.board.columns.length === 1 && result.board.columns[0].name === "全部" && result.totalCount === 12 && result.fetchedCount === 0,
+    JSON.stringify({ hint: result.board?.statusFieldHint, total: result.totalCount, fetched: result.fetchedCount }),
+  );
+}
+
+// 4g. sanitizeError 单遍 redact:token 出现两次也全量替换(R4 遗留 P2:双遍冗余已改单遍,行为不变)
+{
+  const SECRET = "ghp_repeat_secret_value";
+  const result = await hostMod.ghGraphQL("query { viewer { login } }", {}, {
+    env: { GITHUB_TOKEN: SECRET },
+    fetchImpl: async () => {
+      throw new Error(`a ${SECRET} b ${SECRET} c`);
+    },
+  });
+  const text = result.error?.message ?? "";
+  check(
+    "sanitizeError:token 出现两次时单遍即净(两处 [redacted],无残留)",
+    result.ok === false && !text.includes(SECRET) && text.split("[redacted]").length - 1 === 2,
+    text,
+  );
+}
+
+// 4h. mapBoard 守卫:畸形节点不抛不崩,坏项跳过 / 落兜底列
+{
+  const project = { id: "p1", number: 7, title: "Alpha", statusField: { id: "f", name: "Status", options: [{ id: "o1", name: "Todo" }] } };
+  const itemNodes = [
+    null,
+    "junk",
+    42,
+    { id: "bad1", content: null, fieldValues: { nodes: [null, "x", { __typename: "ProjectV2ItemFieldLabelValue", field: { name: "Labels" }, labels: { nodes: "not-array" } }] } },
+    { id: "ok1", content: { title: "正常卡" }, fieldValues: { nodes: [{ __typename: "ProjectV2ItemFieldSingleSelectValue", optionId: "o1", field: { name: "Status" } }] } },
+  ];
+  const mapped = hostMod.mapBoard({ project, itemNodes });
+  const noProject = hostMod.mapBoard({ project: null, itemNodes: [] });
+  check(
+    "mapBoard:畸形节点(非对象项/坏 fieldValues)不抛,坏项落兜底列、好卡归列",
+    mapped.ok === true && mapped.board.columns[0].items.length === 1 && mapped.board.columns[0].items[0].id === "ok1" &&
+      mapped.board.columns.some((column) => column.name === "未分列" && column.items.some((item) => item.id === "bad1")),
+    JSON.stringify(mapped.board.columns.map((column) => [column.name, column.items.length])),
+  );
+  check(
+    "mapBoard:project 为 null 时兜底不抛(单列「全部」+ 占位元信息)",
+    noProject.ok === true && noProject.board.hasStatusField === false && noProject.board.project.title === "(未命名项目)",
+    JSON.stringify(noProject.board.project),
+  );
+}
+
 // ── 5. 渲染:mini hook 运行时驱动真实异步数据流 ──────────────────────────────
 const bodySeat = seats.find((s) => s.seat === "sidebar.right.pane.tab");
 const titleSeat = seats.find((s) => s.seat === "sidebar.right.pane.tab.title");
@@ -464,8 +539,8 @@ const findAll = (node, predicate, out = []) => {
 };
 const findFirst = (node, predicate) => findAll(node, predicate)[0];
 
-/** 面板通用 props:座位 hook 替身 + 投影快照。 */
-const makeProps = (state, boardApi, identity) => ({
+/** 面板通用 props:座位 hook 替身 + 投影快照;polling 缺席时组件不轮询(替身注入可控 timer)。 */
+const makeProps = (state, boardApi, identity, polling) => ({
   t,
   sessionId: state.sessionId,
   useTabInfo: () => ({ panel: { id: "pane-1" }, tab: { id: "tab-1" } }),
@@ -473,6 +548,7 @@ const makeProps = (state, boardApi, identity) => ({
   useProjection: (key, selector) => selector(key === "modelSelection" ? { next: { model: state.model } } : undefined),
   identity: identity ?? { packageId: PACKAGE_ID, ns: NS, tabId: TAB_ID, tabKind: "githubKanbanBoard", seats: ["sidebar.right.pane.tab", "sidebar.right.pane.tab.title"], remote: true },
   board: boardApi,
+  polling,
 });
 
 const stateB = {
@@ -567,7 +643,7 @@ const sampleBoard = {
   const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
   const text = textOf(tree);
   check("初始 getBoard 失败:显示错误态而非空看板", text.includes("读取失败") && text.includes("[http_error]") && !text.includes("该项目还没有看板条目") && !text.includes("viewer 名下没有"), text.match(/读取失败[^•]*/)?.[0]?.slice(0, 60));
-  // 注:错误态吞掉切换器属已知 P2(loadBoard 失败时工具栏被错误段整体替换),本轮不修,记 TODO 1.3。
+  // 注:错误态保留切换器/刷新按钮属 R4 遗留 P2,1.3 轮已修(见 5g 用例)。
 }
 
 // 5c3. 快速切换项目:慢的旧响应不得覆盖新项目看板(请求序守卫)
@@ -640,6 +716,115 @@ const sampleBoard = {
   const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
   const text = textOf(tree);
   check("错误态:显示 [code] + 文案,无堆栈帧", text.includes("读取失败") && text.includes("[graphql_error]") && !/at\s+\S+ \(.*:\d+:\d+\)/.test(text), text.match(/读取失败[^•]*/)?.[0]?.slice(0, 80));
+}
+
+// ── 5e–5h. TODO 1.3:轮询 / 可见性 / 错误态工具栏 / totalCount 口径 ─────────
+
+/** 手动 tick 的轮询替身:setInterval 只登记回调,由用例显式推进(不依赖真实 30s)。 */
+const makePolling = (isVisible = () => true) => {
+  const registered = [];
+  return {
+    polling: { intervalMs: 30_000, setInterval: (callback, ms) => { registered.push({ callback, ms }); return () => registered.pop(); }, isVisible },
+    ticks: () => { for (const { callback } of [...registered]) callback(); },
+    count: () => registered.length,
+  };
+};
+
+// 5e. 轮询触发重拉:tick 到期 → remote getBoard 再次发生且新数据进投影;inFlight 时不叠发
+{
+  const boardV1 = { project: { id: "p1", number: 7, title: "Alpha" }, hasStatusField: true, columns: [{ optionId: "o1", name: "Todo", items: [{ id: "i1", title: "网页端改的旧标题", url: undefined, assignees: [], labels: [], statusOptionId: "o1" }] }] };
+  const boardV2 = { project: { id: "p1", number: 7, title: "Alpha" }, hasStatusField: true, columns: [{ optionId: "o1", name: "Todo", items: [{ id: "i1", title: "网页端改的新标题", url: undefined, assignees: [], labels: [], statusOptionId: "o1" }] }] };
+  const getCalls = [];
+  let pending = null; // 挂起第 2 次 getBoard 的返回,用于构造 inFlight 窗口
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
+    getBoard: async (request) => {
+      getCalls.push(request);
+      if (pending !== null) return pending.promise;
+      return { ok: true, board: getCalls.length === 1 ? boardV1 : boardV2, totalCount: 1 };
+    },
+  };
+  const { polling, ticks } = makePolling();
+  miniReact.reset();
+  let tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi, undefined, polling));
+  check("轮询:初次挂载后 1 次 getBoard(项目 #7),且已注册 1 个轮询定时器", getCalls.length === 1 && getCalls[0]?.projectNumber === 7, JSON.stringify(getCalls));
+  // 第 1 个 tick:拉到新看板
+  ticks();
+  tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi, undefined, polling), 12);
+  check("轮询:tick 到期后再次调用 getBoard({projectNumber:7})", getCalls.length === 2 && getCalls[1]?.projectNumber === 7, JSON.stringify(getCalls));
+  check("轮询:重拉的新标题进投影(网页端改卡,面板跟上)", textOf(tree).includes("网页端改的新标题") && !textOf(tree).includes("网页端改的旧标题"), textOf(tree).match(/网页端改的(新|旧)标题/)?.[0]);
+  // 第 2 个 tick:getBoard 挂起未回(inFlight),再 tick 两次都不得叠发
+  pending = { promise: new Promise(() => {}) };
+  ticks(); // 发起第 3 次请求,永不返回 → inFlight 恒真
+  tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi, undefined, polling), 4);
+  ticks();
+  tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi, undefined, polling), 4);
+  check("轮询:上一轮请求未回(inFlight)时 tick 不叠发(仍只有 3 次调用)", getCalls.length === 3, `getBoard 次数=${getCalls.length}`);
+}
+
+// 5f. 不可见时跳过本轮 = 暂停,可见后恢复;polling 缺席(props 不传)时组件不轮询不报错
+{
+  const board = { project: { id: "p1", number: 7, title: "Alpha" }, hasStatusField: true, columns: [{ optionId: "o1", name: "Todo", items: [] }] };
+  const getCalls = [];
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
+    getBoard: async (request) => { getCalls.push(request); return { ok: true, board }; },
+  };
+  let visible = false; // 右栏折叠(aria-hidden)→ isVisible() = false
+  const { polling, ticks } = makePolling(() => visible);
+  miniReact.reset();
+  let tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi, undefined, polling));
+  ticks();
+  await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi, undefined, polling), 4);
+  check("可见性:不可见期间 tick 被跳过(不发起 getBoard)", getCalls.length === 1, `getBoard 次数=${getCalls.length}`);
+  visible = true; // 展开右栏
+  ticks();
+  tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi, undefined, polling), 8);
+  check("可见性:回到可见后下一 tick 恢复轮询(getBoard=2)", getCalls.length === 2 && textOf(tree).includes("Alpha"), `getBoard 次数=${getCalls.length}`);
+  // polling 缺席:props 不传 → 不轮询也不报错(旧 props / 降级路径)
+  miniReact.reset();
+  const bareTree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  const bareText = textOf(bareTree);
+  check("polling 缺席:组件正常渲染看板(空态文案)、无错误态、不发起轮询(只 +1 次初始拉取)", bareText.includes("该项目还没有看板条目") && !bareText.includes("读取失败") && getCalls.length === 3, `getBoard 次数=${getCalls.length}`);
+}
+
+// 5g. 错误态保留工具栏(R4 遗留 P2 修复):切换器与刷新按钮在场可操作
+{
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }, { id: "p2", number: 9, title: "Beta" }] }),
+    getBoard: async () => ({ ok: false, error: { code: "http_error", message: "GitHub API HTTP 401。" } }),
+  };
+  miniReact.reset();
+  let tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  const text = textOf(tree);
+  const select = findFirst(tree, (node) => node.type === "select");
+  const reload = findFirst(tree, (node) => node.type === "button" && String(node.props?.className).includes("tgk-reload"));
+  check("错误态:切换器仍在场且可操作(value=7)", select !== undefined && select.props.value === "7" && typeof select.props.onChange === "function", `value=${select?.props?.value}`);
+  check("错误态:刷新按钮仍在场(文案「刷新」,非禁用)", reload !== undefined && textOf(reload).includes("刷新") && reload.props.disabled !== true, textOf(reload ?? ""));
+  check("错误态:错误文案与工具栏同屏共存", text.includes("读取失败") && text.includes("[http_error]") && text.includes("#7 Alpha") && text.includes("#9 Beta"), text.match(/读取失败[^•]*/)?.[0]?.slice(0, 60));
+  // 刷新按钮可操作:点击后重发 getBoard
+  reload.props.onClick();
+  tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi), 8);
+  check("错误态:点刷新按钮重发 getBoard(错误态可重试)", textOf(tree).includes("读取失败") && textOf(tree).includes("#7 Alpha"), "");
+}
+
+// 5h. totalCount 口径:服务端口径在场时展示全量,缺席时退回列合计
+{
+  const board = sampleBoard; // 列合计 = 2(待办卡 + 设计 brief 评审)
+  const boardApi = (withTotal) => ({
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
+    getBoard: async () => withTotal ? { ok: true, board, totalCount: 12 } : { ok: true, board },
+  });
+  const treeServer = await settleFresh(bodySeat.component, makeProps(stateB, boardApi(true)));
+  const textServer = textOf(treeServer);
+  check("totalCount:服务端口径在场时展示「共 12 张卡」+ 截断提示「已加载 2 / 12 张」", textServer.includes("共 12 张卡") && textServer.includes("已加载 2 / 12 张"), textServer.match(/共\s*\d+\s*张卡|已加载[^•]*/g)?.join(" | "));
+  const treeLocal = await settleFresh(bodySeat.component, makeProps(stateB, boardApi(false)));
+  const textLocal = textOf(treeLocal);
+  check("totalCount:口径缺席时退回列合计「共 2 张卡」且无截断提示", textLocal.includes("共 2 张卡") && !textLocal.includes("已加载"), textLocal.match(/共\s*\d+\s*张卡|已加载[^•]*/g)?.join(" | "));
 }
 
 const titleText = textOf(titleSeat.component({ t, useSessions: (selector) => selector(stateB.list) })).replace(/\s+/g, " ").trim();
