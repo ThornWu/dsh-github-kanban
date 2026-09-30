@@ -41,7 +41,7 @@ $G = /Users/thornwu/.nvm/versions/node/v24.18.0/lib/node_modules/@deepseek-ai/ds
 - 读:GraphQL Projects v2——项目列表、条目(items)、字段(Status 单选列即看板列)、views
 - 写:`updateProjectV2ItemFieldValue`(移列)、`addProjectV2ItemById`、`deleteProjectV2Item`、`updateProjectV2ItemPosition`(拖动排序)
 - 通知:org 级 webhook 有 `projects_v2_item` 事件,但需要公网 receiver——**本机场景放弃,用 cordis-plugin-timer 轮询(30s)**;GitHub Actions 无 projects_v2 触发器(与我们无关,自建轮询不受限)
-- 认证:fine-grained PAT(或 classic,scope 含 repo + project 读写)🔒 由用户提供,**只走环境变量**,如 `DSH_GITHUB_TOKEN`
+- 认证:fine-grained PAT(或 classic,scope 含 repo + project 读写)🔒 由用户提供,**只走环境变量**;变量名以 2026-09-29 用户纠正为准(见 lib/index.js 的 `TOKEN_ENV`)
 
 ## 执行守则
 
@@ -79,10 +79,21 @@ dsh-github-kanban/
     - 静态链路验证已过:`node scripts/smoke-load.mjs` **31/31** —— 注册 id 等于包名、load 阶段零副作用、物化时注入带归属的样式、`apply(ctx)` 按 **keyed** 规则注册 1 个 tab 类型 + 2 个座位(key = 类型 id)、宿主半边注册 `githubKanban` 服务骨架且不含网络/凭据面、body 在**两份不同会话投影快照**下读数不同(1→3 会话、模型 glm-5.3→deepseek-v4)
     - **未做/待办**:右栏真机出现 tab —— 1.1 只交付脚手架与静态验证,**装进 `~/.dsh/profiles/web` 并重启 dsh web 属 1.4**;真实 GitHub 数据与 token 属 1.2;面板视觉未过 UE
     - 与调研结论的差异(重要,动 1.2 前先读):`notes/dev-notes.md` —— 关键三条:①`sidebar.right.pane.tab` 是 **keyed** 座位,必须先向 `ctx.sidebarRightTabs` 注册 tab 类型,且 keyed 用 `key` 不是 `id`;②host→浏览器调用需要 typert 生成物(`./typert` + `./remote`)或手写 wire schema,`@Remote` 本身不够;③右栏 tab 的 props 来自标准 props 座位(`useTabInfo`/`useSessions`/`useProjection`),不必依赖 `ctx.sessions`
-- [ ] **1.2 GitHub 读链路**:token 从环境变量取(缺失时面板给配置引导,不报错堆栈);GraphQL 拉项目列表 → 项目切换器;拉当前项目 items + Status 字段 → 分列渲染(列序 = Status 选项序;卡片显示标题、负责人、标签)
+- [x] **1.2 GitHub 读链路**:token 从环境变量取(缺失时面板给配置引导,不报错堆栈);GraphQL 拉项目列表 → 项目切换器;拉当前项目 items + Status 字段 → 分列渲染(列序 = Status 选项序;卡片显示标题、负责人、标签)
   - 完成标志:能切换 ≥2 个项目(用户的实际 Projects),看板与 GitHub 网页端一致
+  - 实测(静态验证完成,真机等 1.4 装 profile):
+    - 宿主半边:GraphQL 客户端(全局 fetch,零新增依赖,分页拉到 ≤200 items)、字段映射纯函数(列序 = Status 选项序、空列保留、缺 Status 字段退化单列)、`githubKanban` 远程面 3 方法(status / listProjects / getBoard)
+    - token 只走 `GITHUB_TOKEN`(用户纠正,原调研写名弃用):缺失时 status() 报布尔标志、面板出配置引导;错误文案经脱敏(token 值 → [redacted]);永不进日志或返回数据
+    - 宿主→浏览器路线(实测决策,见 notes/dev-notes.md 差异 9):生成器装得到但是 monorepo 的 TS 工程分析器,弃;改走「宿主 SRC 回退(typertRemote 绑定 + v1 原型标记) + 浏览器手写 strict 占位清单经 ctx.remote.$mount」,零新增依赖
+    - 浏览器半边:token 配置引导(无报错堆栈)、项目切换器(切换重拉)、按 Status 选项序分列、卡片三要素(标题/负责人/标签)、加载/错误/空态齐全,样式仍走带归属的 injectPluginStyles
+    - 自检:node scripts/smoke-load.mjs **60/60**(原 31 项重写扩到 58:远程清单、token 红线、GraphQL 纯度、字段映射、面板数据流;审查后 +2 先红后绿用例);真实网络调用不进自检
+    - 独立审查(code-reviewer,747d40d):修后可合,无 P0;2 条 P1 已修(888ccec 初始失败被兜底 ready 掩盖成空板 / d24c662 切换项目无请求序守卫);SRC 回退路线经 $G 源码逐处核验成立
+    - **未做/待办**:真机看板与 GitHub 网页端一致性比对(需 1.4 + 用户提供 token 🔒);org 名下项目暂不可见(viewer.projectsV2 只覆盖 viewer 名下,遗留项)
 - [ ] **1.3 轮询刷新**:cordis-plugin-timer 每 30s 重拉,投影推送更新;面板折叠时降频或暂停
   - 完成标志:网页端改卡片,面板 30s 内跟上
+  - 顺带清理(1.2 审查遗留 P2,本轮不修):错误态吞掉工具栏(切换器/刷新按钮不可见,应保留);刷新完成态缺 totalCount 口径显示;mapBoard 对缺字段/畸形节点无守卫;fields(first:40) 截断或 Status 字段被改名时静默退化为「全部」单列、应给提示
+  - 已销账(R3 终审 5 条 P2 → cfee69f 修复,R4 增量审确认):graphql_error 脱敏 / 截断先于脱敏并抹跨界前缀 / 项目列表 pageInfo 分页拉全 / isInitial 死参数 / selected 失配禁用占位
+  - 新增顺带清理(R4 备注,P2):sanitizeError 双遍 redact 第二遍冗余且注释「跑两遍替换兜底」与事实不符(lib/index.js:115,单遍即净);≥4 字符巧合后缀误伤面维持现状、仅记录(:106)
 - [ ] **1.4 装入 profile**:`@local/thorn-github-kanban` 链接进 `~/.dsh/profiles/web`,重启验证
   - 完成标志:全新启动 dsh web,插件自动生效
 
