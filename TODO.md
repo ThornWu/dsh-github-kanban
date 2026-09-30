@@ -92,6 +92,8 @@ dsh-github-kanban/
 - [ ] **1.3 轮询刷新**:cordis-plugin-timer 每 30s 重拉,投影推送更新;面板折叠时降频或暂停
   - 完成标志:网页端改卡片,面板 30s 内跟上
   - 顺带清理(1.2 审查遗留 P2,本轮不修):错误态吞掉工具栏(切换器/刷新按钮不可见,应保留);刷新完成态缺 totalCount 口径显示;mapBoard 对缺字段/畸形节点无守卫;fields(first:40) 截断或 Status 字段被改名时静默退化为「全部」单列、应给提示
+  - 已销账(R3 终审 5 条 P2 → cfee69f 修复,R4 增量审确认):graphql_error 脱敏 / 截断先于脱敏并抹跨界前缀 / 项目列表 pageInfo 分页拉全 / isInitial 死参数 / selected 失配禁用占位
+  - 新增顺带清理(R4 备注,P2):sanitizeError 双遍 redact 第二遍冗余且注释「跑两遍替换兜底」与事实不符(lib/index.js:115,单遍即净);≥4 字符巧合后缀误伤面维持现状、仅记录(:106)
 - [ ] **1.4 装入 profile**:`@local/thorn-github-kanban` 链接进 `~/.dsh/profiles/web`,重启验证
   - 完成标志:全新启动 dsh web,插件自动生效
 
