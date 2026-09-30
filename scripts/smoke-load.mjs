@@ -211,9 +211,9 @@ const locale = {
 };
 const mountedContributions = [];
 const scopedInjectCalls = [];
-/** scoped fiber 捕获的远程面替身:验证 boardApi 经 facePromise 调通(真实面由网关装)。 */
+/** scoped fiber 捕获的远程面替身:按网关真实契约回信封 {ok:true, value:<业务结果>}(rc.2 实测)。 */
 const remoteFaceStub = {
-  status: async () => ({ ok: true, status: { tokenConfigured: false } }),
+  status: async () => ({ ok: true, value: { ok: true, status: { tokenConfigured: false } } }),
 };
 const ctx = {
   effect: (callback, label) => {
