@@ -612,6 +612,21 @@ const sampleBoard = {
   check("自检区标出本插件占位", textA.includes("sidebar.panellist + main"));
 }
 
+// 5a-2. R6 P1:root 座位 props 缺席 useTabInfo / useProjection 时,两行标 N/A 且不红
+{
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    listProjects: async () => ({ ok: true, projects: [] }),
+    getBoard: async () => ({ ok: true, board: sampleBoard }),
+  };
+  const { useTabInfo: _ti, useProjection: _pj, ...rootProps } = makeProps(stateB, boardApi);
+  const tree = await settleFresh(bodySeat.component, rootProps);
+  const text = textOf(tree);
+  const dots = findAll(tree, (node) => String(node.props?.className ?? "").includes("tgk-dot"));
+  check("链路自检:缺席 props 的两行标 N/A(root 座位不供)", (text.match(/N\/A\(root 座位不供\)/g) ?? []).length === 2, text.match(/N\/A[^• ]*/g)?.join(" "));
+  check("链路自检:缺席 props 不算失败(全部绿点,无红点)", dots.length === 5 && dots.every((node) => String(node.props.className).includes("tgk-dotOk")), `dots=${dots.map((node) => node.props.className).join(" | ")}`);
+}
+
 // 5b. token 未配置 → 配置引导,不显示报错堆栈
 {
   const boardApi = {
