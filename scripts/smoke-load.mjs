@@ -3,12 +3,14 @@
  * dsh-github-kanban · 加载链路静态自检(零依赖,只用 node 内置模块)。
  *
  * 为什么有它:dsh 的浏览器插件链路只有装进 profile 重启 dsh web 才能真机验证(Phase 1.4),
- * 但契约本身是可以在本地核对的。本脚本按 dsh 0.2.0-rc.1 的加载器/座位/远程契约跑一遍:
+ * 但契约本身是可以在本地核对的。本脚本按 dsh 0.2.0-rc.2 的加载器/座位/远程契约跑一遍
+ * (2026-10-01 对照 rc.2 源码复核,含 SRC 回退与 scoped fiber 取面):
  *   1. package.json:dsh.client 声明、exports["./client"]、bundle patch 齐全;
  *   2. lib/client.js:注册形态正确(load({id, factory}))、id 等于包名、零副作用:
  *      物化时才注入样式,且样式带插件归属;
- *   3. apply(ctx):注册左栏 panellist 入口 + 主区 main 座位(跨会话全局面板),并向 ctx.remote.$mount
- *      挂上手写远程清单(3 个 direct 方法,strict 编解码);
+ *   3. apply(ctx):注册左栏 panellist 入口 + 主区 main 座位(跨会话全局面板),向 ctx.remote.$mount
+ *      挂上手写远程清单(3 个 direct 方法,strict 编解码),并经 ctx.inject 的 scoped fiber
+ *      捕获 remote.githubKanban 面(入口 inject 含自装服务全名会死锁,见 2026-10-01 真机);
  *   4. lib/index.js:宿主 githubKanban 服务带 typertRemote 绑定 + 原型 Remote 标记;
  *      token 缺失路径不抛堆栈、不泄漏;GraphQL 查询串不含 token;字段映射列序正确;
  *   5. body 组件:投影读数随快照变化;token 引导 / 项目切换 / 分列渲染 / 错误态可交互。
@@ -179,10 +181,11 @@ check(
   `inject=${JSON.stringify(mod.inject)}`,
 );
 check("inject 声明 timer 服务(轮询调度用 client runner 内建 timer Service)", mod.inject.includes("timer"), `inject=${JSON.stringify(mod.inject)}`);
-// 真机 inject bug 回归(Phase 1.4):cordis 对嵌套服务按全名查 inject 清单,替身不强制,必须显式断言。
+// 死锁回归(真机 2026-10-01 实测):remote.githubKanban 由本插件 apply 里的 $mount 自装,
+// 入口激活会先等 inject 里的服务 → apply 永不运行。全名只允许出现在 scoped fiber。
 check(
-  "inject 声明嵌套服务全名 remote.githubKanban(与 timer 同款断言口径)",
-  mod.inject.includes("remote.githubKanban"),
+  "入口 inject 禁止声明 remote.githubKanban(自装服务进清单 = 激活死锁)",
+  !mod.inject.includes("remote.githubKanban"),
   `inject=${JSON.stringify(mod.inject)}`,
 );
 check(
@@ -207,10 +210,22 @@ const locale = {
   },
 };
 const mountedContributions = [];
+const scopedInjectCalls = [];
+/** scoped fiber 捕获的远程面替身:验证 boardApi 经 facePromise 调通(真实面由网关装)。 */
+const remoteFaceStub = {
+  status: async () => ({ ok: true, status: { tokenConfigured: false } }),
+};
 const ctx = {
   effect: (callback, label) => {
     effectLabels.push(label);
     return callback();
+  },
+  // 模拟 cordis 运行时 inject(deps, callback):起一个带 deps 的 fiber 跑 callback。
+  // 真实语义是等 remote.githubKanban 被 $mount 装好才运行;替身直接交付面。
+  inject: (injectList, callback) => {
+    scopedInjectCalls.push([...injectList]);
+    callback({ remote: { githubKanban: remoteFaceStub } });
+    return { dispose: () => {} };
   },
   slots: {
     inject: (seat, factory) => factory(),
@@ -258,6 +273,20 @@ check(
   mainInjectProps !== undefined && mainInjectProps.identity?.panelId === PANEL_ID && typeof mainInjectProps.board?.getBoard === "function" && typeof mainInjectProps.polling?.setInterval === "function",
   JSON.stringify(Object.keys(mainInjectProps ?? {})),
 );
+// 取面通路:boardApi 的 facePromise 必须经 scoped fiber(双名 inject)捕获 remote.githubKanban。
+check(
+  "取面走 scoped fiber:ctx.inject 以 [remote, remote.githubKanban] 恰好调一次",
+  scopedInjectCalls.length === 1 && JSON.stringify(scopedInjectCalls[0]) === JSON.stringify(["remote", "remote.githubKanban"]),
+  JSON.stringify(scopedInjectCalls),
+);
+{
+  const wired = await mainInjectProps?.board?.status?.();
+  check(
+    "boardApi.status() 经 scoped fiber 捕获的远程面返回结果",
+    wired?.ok === true && wired.status?.tokenConfigured === false,
+    JSON.stringify(wired),
+  );
+}
 check(
   "panellist 注册带 id / order / label(与 Automation tasks 同型,order 20 > 10)",
   panellistSeat !== undefined && panellistSeat.options.id === PANEL_ID && panellistSeat.options.order === 20 && typeof panellistSeat.options.label === "function" && panellistSeat.options.label() === "GitHub 看板",
