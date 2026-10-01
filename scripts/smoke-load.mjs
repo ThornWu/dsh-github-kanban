@@ -142,6 +142,18 @@ const requireStub = (spec) => {
 
 const registrations = [];
 const styleTags = [];
+// localStorage 桩:__store === null 时禁用(getItem 回 null / setItem no-op),
+// 行为等价「沙箱无 localStorage」—— 快照路径自然降级,既有用例不受影响;
+// 快照用例里置 {} 启用并预置数据,用完必须还原 null。
+const localStorageStub = {
+  __store: null,
+  getItem(key) {
+    return this.__store === null ? null : (this.__store[key] ?? null);
+  },
+  setItem(key, value) {
+    if (this.__store !== null) this.__store[key] = String(value);
+  },
+};
 const sandbox = {
   window: { __ModuleLoader__: { load: (registration) => registrations.push(registration) } },
   document: {
@@ -154,6 +166,7 @@ const sandbox = {
   clearInterval: () => {},
   setTimeout: () => 0,
   clearTimeout: () => {},
+  localStorage: localStorageStub,
 };
 
 let registration;
@@ -588,6 +601,56 @@ check("宿主激活日志不含任何 token 值(只报配置与否)", hostLogs.l
   check("getBoard:repo 非 owner/name 格式返回 input_invalid", badRepo?.ok === false && badRepo.error?.code === "input_invalid", JSON.stringify(badRepo));
 }
 
+// 本地缓存(0.5.0 提速):TTL 命中不打网络、并发去重共享一次拉取、noCache 绕缓存回填
+{
+  let nowMs = 1_000_000;
+  let fetchCount = 0;
+  const viewerPage = () => ({
+    data: { viewer: { projectsV2: { nodes: [{ id: "p7", number: 7, title: "Alpha", updatedAt: "2026-09-30T00:00:00Z", closed: false }], pageInfo: { hasNextPage: false } } } },
+  });
+  const boardPage = () => ({
+    data: {
+      viewer: {
+        projectV2: {
+          id: "p7", number: 7, title: "Alpha",
+          fields: { nodes: [{ name: "Status", options: [{ id: "o1", name: "Todo" }] }] },
+          items: { totalCount: 0, pageInfo: { hasNextPage: false }, nodes: [] },
+        },
+      },
+    },
+  });
+  const service = new hostMod.GithubKanbanService({
+    env: { GITHUB_TOKEN: "t" },
+    cache: { now: () => nowMs },
+    fetchImpl: async (url, init) => {
+      fetchCount += 1;
+      const body = JSON.parse(init.body);
+      return { ok: true, status: 200, json: async () => (String(body.query).includes("projectV2(number:") ? boardPage() : viewerPage()) };
+    },
+  });
+  await service.listProjects();
+  await service.listProjects();
+  check("listProjects:TTL 内二连发只打一次网络", fetchCount === 1, `fetch=${fetchCount}`);
+  nowMs += 61_000; // 越过默认 projectsTtlMs=60s
+  await service.listProjects();
+  check("listProjects:TTL 过期后重拉", fetchCount === 2, `fetch=${fetchCount}`);
+
+  await service.getBoard({ projectNumber: 7 });
+  await service.getBoard({ projectNumber: 7 });
+  check("getBoard:同键 TTL 内二连发只打一次网络", fetchCount === 3, `fetch=${fetchCount}`);
+  await service.getBoard({ projectNumber: 7, noCache: true });
+  check("getBoard:noCache 绕过缓存强制真拉", fetchCount === 4, `fetch=${fetchCount}`);
+  nowMs += 16_000; // 越过默认 boardTtlMs=15s
+  await service.getBoard({ projectNumber: 7 });
+  check("getBoard:TTL 过期后重拉(noCache 已回填新值)", fetchCount === 5, `fetch=${fetchCount}`);
+
+  // 并发去重:同时发起的两个 listProjects 共享同一次拉取(先推过 TTL 避免直接命中缓存)
+  nowMs += 61_000;
+  const before = fetchCount;
+  await Promise.all([service.listProjects(), service.listProjects()]);
+  check("并发去重:同键 in-flight 请求共享一次拉取", fetchCount === before + 1, `fetch=${fetchCount} before=${before}`);
+}
+
 // 字段映射:列序 = Status 选项序;空列保留;卡片三要素
 {
   const statusOptions = [
@@ -862,6 +925,35 @@ const sampleBoard = {
     await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
   }
   check("看板:切到仓库级项目后 getBoard 透传 repo", getCalls.some((r) => r?.projectNumber === 11 && r?.repo === "ThornWu/thorn-agent"), JSON.stringify(getCalls));
+}
+
+// 5c1c. 本地快照(0.5.0 提速):乐观首屏保持快照选中,真数据回来覆盖并写回
+{
+  localStorageStub.__store = {};
+  const SNAPSHOT_KEY = `${PACKAGE_ID}/snapshot/v1`;
+  const snapBoard = { project: { id: "p9", number: 9, title: "Beta" }, hasStatusField: true, columns: [{ optionId: "s1", name: "SnapColumn", items: [{ id: "s1i", title: "旧卡", url: undefined, assignees: [], labels: [], statusOptionId: "s1" }] }] };
+  localStorageStub.__store[SNAPSHOT_KEY] = JSON.stringify({
+    savedAt: 1, projects: [{ id: "p9", number: 9, title: "Beta" }], selectedKey: "#9", board: snapBoard, totalCount: 1,
+  });
+  const getCalls = [];
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 3, version: "0.5.0" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }, { id: "p9", number: 9, title: "Beta" }] }),
+    getBoard: async (request) => {
+      getCalls.push(request);
+      return { ok: true, board: { project: { id: "p9", number: 9, title: "Beta" }, hasStatusField: true, columns: [{ optionId: "f1", name: "FreshColumn", items: [{ id: "f1i", title: "新卡", url: undefined, assignees: [], labels: [], statusOptionId: "f1" }] }] }, totalCount: 1 };
+    },
+  };
+  try {
+    const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
+    const text = textOf(tree);
+    check("快照:选中延续(初拉打的是快照选中项 #9 而非列表第一项)", getCalls[0]?.projectNumber === 9, JSON.stringify(getCalls));
+    check("快照:真数据覆盖乐观首屏(渲染新卡,不残留快照旧卡)", text.includes("FreshColumn") && text.includes("新卡") && !text.includes("旧卡"), text.match(/(Fresh|Snap)Column/)?.[0] ?? "");
+    const stored = JSON.parse(localStorageStub.__store[SNAPSHOT_KEY] ?? "{}");
+    check("快照:RPC 结果写回 localStorage(项目列表 + 新看板)", Array.isArray(stored.projects) && stored.projects.length === 2 && stored.board?.columns?.[0]?.name === "FreshColumn", `keys=${Object.keys(stored).join(",")}`);
+  } finally {
+    localStorageStub.__store = null; // 还原禁用,不影响后续用例
+  }
 }
 
 // 5c2. 初始 getBoard 失败(如 401)→ phase 应为 error,不得展示成空看板
