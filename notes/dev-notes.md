@@ -149,6 +149,13 @@ dsh 0.2.0-rc.2 下首次真机跑到数据链路,连修四个问题(commit 668b9
 
 经验:静态自检(替身 React/ctx)只能验契约形状,验不出激活先后序、环境传递与服务端真实 schema;真机首验后每一层失败都被上一层修复「揭开」,四修三重启才见真实数据。调试利器:页面内 `performance.getEntriesByType('resource')` 找到 RPC 端点,再给 `window.fetch` 打补丁捕获响应体,比猜快。
 
+## 差异 12(2026-10-01,0.4.0 三仓集成):仓库级项目的查询与路由要点
+
+- **repository.projectsV2 = link 到该仓的项目**(Projects v2 没有真正的「仓库所有」项目,owner 永远是 user/org)。`repository(owner,name).projectV2(number: N)` 能解析 link 进来的用户级项目(探针实测),org 项目则**只有**这条路(viewer.projectV2 按 owner 域查号,查不到 org 项目)。
+- 合并策略:viewer 用户级 + 逐仓 link 项目,按项目 id 去重,**保留带仓归属的版本**(切换器可显来源,且路由统一走仓路径)。仓库缺席(repository 为 null,配置错/无权限)跳过该仓,不拖垮整板 —— 与 shape_error 严格区分。
+- closed 过滤:projectsV2 连接没有 includeArchived/closed 参数(schema 不收),查 `closed` 字段在实现层过滤。
+- 配置进 `cordis.patch.yml` 的 insert 行 `config.repos`(owner/name 数组,形状校验、坏条目跳过);token 仍只走环境变量,配置面永不沾凭据。
+
 ## 升级 dsh 时的核对清单
 
 1. `$G/dsh-client-ui-sidebar-right/lib/types/client/contract/slots.d.ts` 与 `tab-registry.d.ts`(座位 kind/key 与 tab 定义字段)。

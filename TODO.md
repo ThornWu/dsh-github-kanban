@@ -98,7 +98,8 @@ dsh-github-kanban/
 - [ ] **1.4 装入 profile**:`@local/thorn-github-kanban` 链接进 `~/.dsh/profiles/web`,重启验证
   - 完成标志:全新启动 dsh web,插件自动生效
   - 进展(2026-09-30):链接+bundle 已装(PID 实测装载,Plugins 面板 ON);真机首验发现 inject 缺声明 bug(cordis 嵌套服务全名查清单)→ 修复并迁移入口至左侧全局面板(sidebar.panellist+main,Thorn 需求:跨项目面板),R6/R7 审毕待合
-  - 进展(2026-10-01,ops):真机验收连修三层(rc.2,见 dev-notes 差异 11)——①激活死锁:入口 inject 含自装服务全名 remote.githubKanban → 取面改 ctx.inject scoped fiber;②生产 token 断链:空 deps 回退 process.env;③网关 direct 调用信封 {ok,value} 无人拆 → boardApi 拆包;顺带删 QUERY_PROJECTS 的 includeArchived(真 API 不接受)。带 GITHUB_TOKEN 重启实测:插件激活、token 读到、真实项目(#2)进切换器、空态渲染正确、自检 5 绿点;smoke 91/91。**剩:选一个有卡的项目核对列序/卡片三要素/totalCount 口径,完成后勾选本项。**
+  - 进展(2026-10-01,ops):真机验收连修三层(rc.2,见 dev-notes 差异 11)——①激活死锁:入口 inject 含自装服务全名 remote.githubKanban → 取面改 ctx.inject scoped fiber;②生产 token 断链:空 deps 回退 process.env;③网关 direct 调用信封 {ok,value} 无人拆 → boardApi 拆包;顺带删 QUERY_PROJECTS 的 includeArchived(真 API 不接受)。带 GITHUB_TOKEN 重启实测:插件激活、token 读到、真实项目(#2)进切换器、空态渲染正确、自检 5 绿点;smoke 91/91。
+  - 进展(2026-10-01,0.4.0 三仓集成):仓库级项目支持(config.repos → 三仓 link 项目并进切换器,同 id 去重保留仓归属,getBoard 按仓走 repository 路径)+ closed 项目过滤(用户自关 #2/#6 后需求)。真机验收:切换器只列三块 open 板且带 · owner/name 标签,切仓项目 getBoard 真实往返成功(#4 thornwu-com,列序 = Status 选项序);smoke 98/98。**剩:有卡项目核对卡片三要素/totalCount 口径(三块板暂均无卡),完成后勾选本项。**
   - 新增顺带清理(R7 备注,P2):lib/client.js:573 注释措辞与 ok 恒真实现不完全一致(现实不可达,顺手改)
 
 ## Phase 2 — 双向联动:拖卡写回(P1)
