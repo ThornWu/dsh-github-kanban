@@ -857,30 +857,23 @@ const sampleBoard = {
   ],
 };
 
-// 5a. 投影读数仍随快照变化(1.1 回归)
+// 5a. 面板纯净化(0.6.0):链路自检/读数/节拍等调试区移除;标准 props 缺席也不崩
 {
   const stateA = { sessionId: "s1", model: "glm-5.3", list: { ids: ["s1"], byId: { s1: { running: true, displayTitle: "看板脚手架" } } } };
   const textA = textOf(await settleFresh(bodySeat.component, makeProps(stateA, undefined))).replace(/\s+/g, " ").trim();
-  const textB = textOf(await settleFresh(bodySeat.component, makeProps(stateB, undefined))).replace(/\s+/g, " ").trim();
-  check("面板随投影变化(两份快照读数不同)", textA !== textB && textA.length > 0 && textB.length > 0);
-  check("读数含会话总数 1→3", textA.includes(" 1 ") && textB.includes(" 3 "));
-  check("读数含投影模型名", textA.includes("glm-5.3") && textB.includes("deepseek-v4"));
-  check("自检区标出本插件占位", textA.includes("sidebar.panellist + main"));
-}
-
-// 5a-2. R6 P1:root 座位 props 缺席 useTabInfo / useProjection 时,两行标 N/A 且不红
-{
+  check(
+    "面板:链路自检/投影读数/渲染节拍/占位说明等调试区已移除",
+    !textA.includes("链路自检") && !textA.includes("渲染节拍") && !textA.includes("本插件占位") && !textA.includes("会话总数") && !textA.includes("渲染节拍"),
+    textA.slice(0, 90),
+  );
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.2.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.6.0" } }),
     listProjects: async () => ({ ok: true, projects: [] }),
     getBoard: async () => ({ ok: true, board: sampleBoard }),
   };
   const { useTabInfo: _ti, useProjection: _pj, ...rootProps } = makeProps(stateB, boardApi);
-  const tree = await settleFresh(bodySeat.component, rootProps);
-  const text = textOf(tree);
-  const dots = findAll(tree, (node) => String(node.props?.className ?? "").includes("tgk-dot"));
-  check("链路自检:缺席 props 的两行标 N/A(root 座位不供)", (text.match(/N\/A\(root 座位不供\)/g) ?? []).length === 2, text.match(/N\/A[^• ]*/g)?.join(" "));
-  check("链路自检:缺席 props 不算失败(全部绿点,无红点)", dots.length === 5 && dots.every((node) => String(node.props.className).includes("tgk-dotOk")), `dots=${dots.map((node) => node.props.className).join(" | ")}`);
+  const textRoot = textOf(await settleFresh(bodySeat.component, rootProps)).replace(/\s+/g, " ").trim();
+  check("面板:标准 props(hook)缺席时正常渲染不崩", textRoot.includes(t("panelTitle")), textRoot.slice(0, 70));
 }
 
 // 5b. token 未配置 → 配置引导,不显示报错堆栈
