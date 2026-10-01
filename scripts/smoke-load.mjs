@@ -486,6 +486,108 @@ check("宿主激活日志不含任何 token 值(只报配置与否)", hostLogs.l
   );
 }
 
+// 仓库级项目(2026-10-01 集成):合并 + 同 id 去重保留仓归属 + closed 过滤 + 缺席仓跳过 + 仓路由
+{
+  const calls = [];
+  const repoBoardPage = {
+    data: {
+      repository: {
+        nameWithOwner: "ThornWu/thornwu-com",
+        projectV2: {
+          id: "pv3", number: 3, title: "Repo Board",
+          fields: { nodes: [{ name: "Status", options: [{ id: "o1", name: "Todo" }, { id: "o2", name: "Done" }] }] },
+          items: {
+            totalCount: 1, pageInfo: { hasNextPage: false },
+            nodes: [
+              {
+                id: "i9",
+                content: { title: "仓卡", url: "https://example.com/9" },
+                fieldValues: {
+                  nodes: [
+                    { __typename: "ProjectV2ItemFieldSingleSelectValue", name: "Todo", optionId: "o1", field: { name: "Status" } },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+  const service = new hostMod.GithubKanbanService({
+    env: { GITHUB_TOKEN: "t" },
+    repos: ["ThornWu/thornwu-com", "bad repo!!", "ThornWu/gone"],
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body);
+      const variables = body.variables;
+      // 仓库路径:区分列表查询与看板查询;gone 仓返回 repository:null(不存在/无权限 → 跳过)
+      if (variables?.owner !== undefined) {
+        if (variables.name === "gone") return { ok: true, status: 200, json: async () => ({ data: { repository: null } }) };
+        if (String(body.query).includes("projectV2(number:")) return { ok: true, status: 200, json: async () => repoBoardPage };
+        return {
+          ok: true, status: 200,
+          json: async () => ({
+            data: {
+              repository: {
+                nameWithOwner: "ThornWu/thornwu-com",
+                projectsV2: {
+                  nodes: [
+                    { id: "pv2", number: 2, title: "@ThornWu's untitled project", updatedAt: "2026-09-28T00:00:00Z", closed: false },
+                    { id: "pv3", number: 3, title: "Repo Board", updatedAt: "2026-09-30T00:00:00Z", closed: false },
+                  ],
+                  pageInfo: { hasNextPage: false },
+                },
+              },
+            },
+          }),
+        };
+      }
+      // viewer 路径:#2(与仓列表重复)+ closed 的 #1
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          data: {
+            viewer: {
+              projectsV2: {
+                nodes: [
+                  { id: "pv2", number: 2, title: "@ThornWu's untitled project", updatedAt: "2026-09-28T00:00:00Z", closed: false },
+                  { id: "pv1", number: 1, title: "Closed Old", updatedAt: "2026-09-27T00:00:00Z", closed: true },
+                ],
+                pageInfo: { hasNextPage: false },
+              },
+            },
+          },
+        }),
+      };
+    },
+  });
+  const st = await service.status();
+  check("status():repos 计数 = 合法配置条数(坏格式过滤)", st?.ok === true && st.status?.repos === 2, JSON.stringify(st));
+  const list = await service.listProjects();
+  check(
+    "listProjects:仓级合并 + 同 id 去重保留仓归属 + closed 过滤 + 缺席仓跳过",
+    list.ok === true &&
+      list.projects.length === 2 &&
+      list.projects[0]?.repo === "ThornWu/thornwu-com" && list.projects[0]?.number === 3 &&
+      list.projects[1]?.repo === "ThornWu/thornwu-com" && list.projects[1]?.number === 2 &&
+      !list.projects.some((p) => p.number === 1),
+    JSON.stringify(list.projects),
+  );
+  const board = await service.getBoard({ projectNumber: 3, repo: "ThornWu/thornwu-com" });
+  const boardCall = calls[calls.length - 1];
+  check(
+    "getBoard:带 repo 走 repository 路径(owner/name 进变量,查询含 repository)",
+    board.ok === true &&
+      board.board?.columns?.map((c) => c.name).join(",") === "Todo,Done" &&
+      boardCall?.variables?.owner === "ThornWu" && boardCall?.variables?.name === "thornwu-com" &&
+      String(boardCall?.query ?? "").includes("repository("),
+    `cols=${board.board?.columns?.map((c) => c.name).join(",")}`,
+  );
+  const badRepo = await service.getBoard({ projectNumber: 3, repo: "no-slash" });
+  check("getBoard:repo 非 owner/name 格式返回 input_invalid", badRepo?.ok === false && badRepo.error?.code === "input_invalid", JSON.stringify(badRepo));
+}
+
 // 字段映射:列序 = Status 选项序;空列保留;卡片三要素
 {
   const statusOptions = [
@@ -713,7 +815,7 @@ const sampleBoard = {
   const text = textOf(tree);
   check("看板:项目切换器列出 ≥2 个项目(#7 Alpha / #9 Beta)", text.includes("#7 Alpha") && text.includes("#9 Beta"));
   const select = findFirst(tree, (node) => node.type === "select");
-  check("看板:切换器是 select 且默认选第一个项目", select !== undefined && select.props.value === "7", `value=${select?.props?.value}`);
+  check("看板:切换器是 select 且默认选第一个项目(复合键 #N)", select !== undefined && select.props.value === "#7", `value=${select?.props?.value}`);
   const columns = findAll(tree, (node) => node.type === "section" && typeof node.props?.className === "string" && node.props.className.includes("tgk-column"));
   const columnNames = columns.map((column) => textOf(column).split("空")[0].trim().match(/^(Todo|In Progress|Done)/)?.[1]);
   check("看板:列渲染顺序 = Status 选项序(Todo → In Progress → Done)", columnNames.join(",") === "Todo,In Progress,Done", columnNames.join(","));
@@ -726,10 +828,40 @@ const sampleBoard = {
   if (select === undefined) {
     check("看板:切换器可交互(select 在场)", false, "select 缺席,无法模拟切换");
   } else {
-    select.props.onChange({ target: { value: "9" } });
+    select.props.onChange({ target: { value: "#9" } });
     await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
   }
   check("看板:切换到 #9 后重拉 getBoard({projectNumber:9})", getCalls.some((r) => r?.projectNumber === 9), JSON.stringify(getCalls));
+}
+
+// 5c1b. 仓库级项目(2026-10-01 集成):切换器带仓标签,选中键 owner/name#N,getBoard 透传 repo
+{
+  const getCalls = [];
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 3, version: "0.4.0" } }),
+    listProjects: async () => ({
+      ok: true,
+      projects: [
+        { id: "p1", number: 7, title: "Alpha" },
+        { id: "p11", number: 11, title: "Repo Board", repo: "ThornWu/thorn-agent" },
+      ],
+    }),
+    getBoard: async (request) => {
+      getCalls.push(request);
+      return { ok: true, board: sampleBoard };
+    },
+  };
+  const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
+  const text = textOf(tree);
+  check("看板:仓库级项目选项带 · owner/name 标签", text.includes("#11 Repo Board · ThornWu/thorn-agent"), text.match(/#[\d]+[^•]{0,60}/g)?.join(" | "));
+  const select = findFirst(tree, (node) => node.type === "select");
+  const repoOption = select !== undefined ? findAll(select, (node) => node.type === "option" && node.props?.value === "ThornWu/thorn-agent#11")[0] : undefined;
+  check("看板:仓库级选项值是复合键 owner/name#N", repoOption !== undefined, `value=${repoOption?.props?.value}`);
+  if (select !== undefined && repoOption !== undefined) {
+    select.props.onChange({ target: { value: "ThornWu/thorn-agent#11" } });
+    await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  }
+  check("看板:切到仓库级项目后 getBoard 透传 repo", getCalls.some((r) => r?.projectNumber === 11 && r?.repo === "ThornWu/thorn-agent"), JSON.stringify(getCalls));
 }
 
 // 5c2. 初始 getBoard 失败(如 401)→ phase 应为 error,不得展示成空看板
@@ -765,10 +897,10 @@ const sampleBoard = {
   miniReact.reset();
   const tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi), 40);
   const select = findFirst(tree, (node) => node.type === "select");
-  select.props.onChange({ target: { value: "9" } }); // 先点 #9(慢)
+  select.props.onChange({ target: { value: "#9" } }); // 先点 #9(慢)
   const tree2 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
   const select2 = findFirst(tree2, (node) => node.type === "select");
-  select2.props.onChange({ target: { value: "7" } }); // 再点 #7(快,#7 先回,#9 后回)
+  select2.props.onChange({ target: { value: "#7" } }); // 再点 #7(快,#7 先回,#9 后回)
   const tree3 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi), 80);
   const text3 = textOf(tree3);
   check("快速切换:最终展示的是后选项目(#7 Alpha)的看板", text3.includes("AlphaColumn") && !text3.includes("BetaColumn"), text3.match(/(AlphaColumn|BetaColumn)/g)?.join(","));
@@ -788,7 +920,7 @@ const sampleBoard = {
   miniReact.reset();
   let tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
   const select = findFirst(tree, (node) => node.type === "select");
-  select.props.onChange({ target: { value: "9" } }); // selected=9 不在当前 options 里
+  select.props.onChange({ target: { value: "#9" } }); // selected=#9 不在当前 options 里
   tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
   const select2 = findFirst(tree, (node) => node.type === "select");
   const text = textOf(tree);
@@ -901,7 +1033,7 @@ const makePolling = (isVisible = () => true) => {
   const text = textOf(tree);
   const select = findFirst(tree, (node) => node.type === "select");
   const reload = findFirst(tree, (node) => node.type === "button" && String(node.props?.className).includes("tgk-reload"));
-  check("错误态:切换器仍在场且可操作(value=7)", select !== undefined && select.props.value === "7" && typeof select.props.onChange === "function", `value=${select?.props?.value}`);
+  check("错误态:切换器仍在场且可操作(value=#7)", select !== undefined && select.props.value === "#7" && typeof select.props.onChange === "function", `value=${select?.props?.value}`);
   check("错误态:刷新按钮仍在场(文案「刷新」,非禁用)", reload !== undefined && textOf(reload).includes("刷新") && reload.props.disabled !== true, textOf(reload ?? ""));
   check("错误态:错误文案与工具栏同屏共存", text.includes("读取失败") && text.includes("[http_error]") && text.includes("#7 Alpha") && text.includes("#9 Beta"), text.match(/读取失败[^•]*/)?.[0]?.slice(0, 60));
   // 刷新按钮可操作:点击后重发 getBoard
