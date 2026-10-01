@@ -651,6 +651,39 @@ check("宿主激活日志不含任何 token 值(只报配置与否)", hostLogs.l
   check("并发去重:同键 in-flight 请求共享一次拉取", fetchCount === before + 1, `fetch=${fetchCount} before=${before}`);
 }
 
+// 卡片内容不可读自诊断(2026-10-01 真机):content null 计数进 board.contentMissing
+{
+  const service = new hostMod.GithubKanbanService({
+    env: { GITHUB_TOKEN: "t" },
+    fetchImpl: async (url, init) => ({
+      ok: true, status: 200,
+      json: async () => ({
+        data: {
+          viewer: {
+            projectV2: {
+              id: "p7", number: 7, title: "Alpha",
+              fields: { nodes: [{ name: "Status", options: [{ id: "o1", name: "Todo" }] }] },
+              items: {
+                totalCount: 2, pageInfo: { hasNextPage: false },
+                nodes: [
+                  { id: "i1", content: null, fieldValues: { nodes: [{ __typename: "ProjectV2ItemFieldSingleSelectValue", name: "Todo", optionId: "o1", field: { name: "Status" } }] } },
+                  { id: "i2", content: { title: "正常卡" }, fieldValues: { nodes: [{ __typename: "ProjectV2ItemFieldSingleSelectValue", name: "Todo", optionId: "o1", field: { name: "Status" } }] } },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    }),
+  });
+  const result = await service.getBoard({ projectNumber: 7 });
+  check(
+    "getBoard:content 为 null 的卡计数进 board.contentMissing(权限缺口自诊断)",
+    result?.ok === true && result.board?.contentMissing === 1 && result.totalCount === 2,
+    `contentMissing=${result.board?.contentMissing}`,
+  );
+}
+
 // 字段映射:列序 = Status 选项序;空列保留;卡片三要素
 {
   const statusOptions = [
@@ -925,6 +958,25 @@ const sampleBoard = {
     await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
   }
   check("看板:切到仓库级项目后 getBoard 透传 repo", getCalls.some((r) => r?.projectNumber === 11 && r?.repo === "ThornWu/thorn-agent"), JSON.stringify(getCalls));
+}
+
+// 5c1d. 卡片内容不可读提示:board.contentMissing > 0 时面板给出 token 权限指引
+{
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 3, version: "0.5.1" } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
+    getBoard: async () => ({
+      ok: true,
+      board: {
+        project: { id: "p1", number: 7, title: "Alpha" }, hasStatusField: true, contentMissing: 17,
+        columns: [{ optionId: "o1", name: "Todo", items: [{ id: "a1", title: "(无标题)", url: undefined, assignees: [], labels: [], statusOptionId: "o1" }] }],
+      },
+      totalCount: 17,
+    }),
+  };
+  const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
+  const text = textOf(tree);
+  check("看板:contentMissing 提示 token 缺 Issues/PR 读权限(含张数)", text.includes("读不到标题") && text.includes("17") && text.includes("Read-only"), text.match(/有 \d+ 张卡读不到[^。]{0,80}/)?.[0] ?? "");
 }
 
 // 5c1c. 本地快照(0.5.0 提速):乐观首屏保持快照选中,真数据回来覆盖并写回
