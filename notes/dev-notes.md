@@ -156,6 +156,12 @@ dsh 0.2.0-rc.2 下首次真机跑到数据链路,连修四个问题(commit 668b9
 - closed 过滤:projectsV2 连接没有 includeArchived/closed 参数(schema 不收),查 `closed` 字段在实现层过滤。
 - 配置进 `cordis.patch.yml` 的 insert 行 `config.repos`(owner/name 数组,形状校验、坏条目跳过);token 仍只走环境变量,配置面永不沾凭据。
 
+## 0.5.0 提速(2026-10-01):缓存分层与实测数字
+
+- 实测(本机,三仓配置):冷开 RPC = status 14ms + listProjects 1393ms(并行后单往返窗)+ getBoard 845ms;重开面板切换器 ~1s 出现(纯面板挂载开销,数据瞬时),status/list 走宿主缓存 10-15ms,getBoard 视 TTL(15s)真拉或命中。剩余的 ~1s 面板挂载是 dsh 主座位 remount 的固有成本,非数据链路。
+- 分层:宿主进程内 TTL 缓存(projects 60s / board 15s,**board TTL 刻意 < 轮询 30s** 保证轮询永远真拉)+ in-flight 去重;浏览器 localStorage 快照(`snapshot/v1` 键,乐观首屏 + 选中延续 + 成功写回;无 localStorage/隐私模式全静默降级);刷新按钮 noCache 绕缓存回填。
+- 红线不变:token 只在宿主进程,快照只含看板业务数据(公开元数据)。
+
 ## 升级 dsh 时的核对清单
 
 1. `$G/dsh-client-ui-sidebar-right/lib/types/client/contract/slots.d.ts` 与 `tab-registry.d.ts`(座位 kind/key 与 tab 定义字段)。
