@@ -164,7 +164,11 @@ const sandbox = {
   console,
   setInterval: () => 0,
   clearInterval: () => {},
-  setTimeout: () => 0,
+  // setTimeout 必须真的触发(微任务即刻):瞬态错误重试链(bootstrap 退避 + 错误态 4s 自愈轮)靠它推进
+  setTimeout: (fn) => {
+    Promise.resolve().then(() => fn());
+    return 0;
+  },
   clearTimeout: () => {},
   localStorage: localStorageStub,
 };
@@ -999,6 +1003,43 @@ const sampleBoard = {
   } finally {
     localStorageStub.__store = null; // 还原禁用,不影响后续用例
   }
+}
+
+// 5c1e. 瞬态连接错误(gateway/internal / Failed to fetch)自动重试自愈(0.7.0)
+{
+  // 前两次 status 报连接未就绪,第三次成功 → 面板最终渲染看板而非钉死错误态
+  let statusCalls = 0;
+  const boardApi = {
+    status: async () => {
+      statusCalls += 1;
+      if (statusCalls <= 2) return { ok: false, error: { code: "gateway/internal", message: "client api: githubKanban/status failed: Failed to fetch" } };
+      return { ok: true, status: { tokenConfigured: true, repos: 3, version: "0.7.0" } };
+    },
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
+    getBoard: async () => ({ ok: true, board: sampleBoard, totalCount: 2 }),
+  };
+  const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
+  const text = textOf(tree);
+  check("瞬态错误:status 两次连接未就绪后第三次成功,面板恢复渲染看板", text.includes("Todo") && text.includes("设计 brief 评审"), `statusCalls=${statusCalls}`);
+  check("瞬态错误:重试期间不残留错误态/重试提示", !text.includes("读取失败") && !text.includes("自动重试"), text.match(/(读取失败|自动重试)[^。]{0,40}/)?.[0] ?? "");
+  check("瞬态错误:bootstrap 链内确有重试(status 被调 ≥3 次)", statusCalls >= 3, `statusCalls=${statusCalls}`);
+}
+
+// 5c1f. 瞬态错误持续失败 → 错误态 + 自动重试提示,重试轮真实发生(有 15 轮封顶,settle 可结束)
+{
+  let statusCalls = 0;
+  const boardApi = {
+    status: async () => {
+      statusCalls += 1;
+      return { ok: false, error: { code: "gateway/internal", message: "client api: githubKanban/status failed: Failed to fetch" } };
+    },
+    listProjects: async () => ({ ok: true, projects: [] }),
+    getBoard: async () => ({ ok: true, board: sampleBoard }),
+  };
+  const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
+  const text = textOf(tree);
+  check("瞬态错误:持续失败显示错误态 + 自动重试提示", text.includes("读取失败") && text.includes("自动重试"), text.match(/(读取失败|自动重试)[^。]{0,50}/)?.[1] ?? "");
+  check("瞬态错误:错误态自愈轮真实发生(status 被调多次)", statusCalls >= 5, `statusCalls=${statusCalls}`);
 }
 
 // 5c2. 初始 getBoard 失败(如 401)→ phase 应为 error,不得展示成空看板

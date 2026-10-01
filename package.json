@@ -1,6 +1,6 @@
 {
   "name": "@local/thorn-github-kanban",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "description": "dsh Web UI 插件:GitHub Projects(Projects v2)看板全局面板。同一个包同时提供宿主半边(数据服务)与浏览器半边(左栏 Global panels 入口 + 主区页面)",
