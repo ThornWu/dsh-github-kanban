@@ -22,7 +22,7 @@ test("pack:check:npm pack --dry-run 的文件清单与交付白名单一致", ()
   assert.equal(manifest.name, "@local/thorn-github-kanban");
   const files = manifest.files.map((file) => file.path).sort();
 
-  const required = ["README.md", "cordis.patch.yml", "lib/client.js", "lib/index.js", "package.json"];
+  const required = ["LICENSE", "README.md", "cordis.patch.yml", "lib/client.js", "lib/index.js", "package.json"];
   for (const path of required) assert.ok(files.includes(path), `分发包缺少 ${path}`);
 
   const forbiddenPrefixes = ["test/", "scripts/", "notes/", "review/", "memory/", "node_modules/", ".github/", ".zcode/"];

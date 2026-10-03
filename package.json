@@ -2,6 +2,7 @@
   "name": "@local/thorn-github-kanban",
   "version": "0.8.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "dsh Web UI 插件:GitHub Projects(Projects v2)只读看板全局面板。同一个 npm 包同时提供宿主半边(lib/index.js,@Remote 数据服务)与浏览器半边(lib/client.js,左栏 Global panels 入口 + 主区页面),通过 cordis.patch.yml 挂载。",
   "keywords": [

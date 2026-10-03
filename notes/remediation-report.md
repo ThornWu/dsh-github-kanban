@@ -34,7 +34,7 @@
 | S4.1 | 完成(截图除外) | README.md(phase4 S4.1;本轮收官校对快照/超时/LRU/警告/恢复入口描述与实现一致,见 §7 第 9 条) | 通读比对 | 面板截图需真机环境,列为发布前可选项(S5.2 时顺手补) |
 | S4.2 | 完成 | cordis.patch.yml(repos=[] + 校验注释);README「配置」 | `npm run test:smoke`(读 patch 的断言) | — |
 | S4.3 | 完成(元数据) | package.json(description/keywords/engines/homepage/bugs) | `npm pack --dry-run` | 包名/公开/npm publish 待所有者 |
-| S4.4 | **待所有者(发布阻塞)** | 未创建 LICENSE(规则:授权决定归所有者);README「许可证」节 + 候选对比(MIT/Apache-2.0)已备 | — | 所有者选定后:LICENSE + package.json license 字段 + README 更新 |
+| S4.4 | **完成(2026-10-03)** | LICENSE(MIT);package.json `license` 字段;README「许可证」节更新为既成;依赖/复制资源检查结论:运行时零依赖,wire 契约对齐非代码复制 | `npm run pack:check`(required 白名单含 LICENSE) | 所有者已选定 MIT;git 历史仓名 rewrite 仍待单独授权 |
 | S4.5 | 完成 | CONTRIBUTING.md / SECURITY.md / CHANGELOG.md | — | 安全报告渠道待所有者提供;二轮审查发现两文档各一处失真(测试要求段诱导跳过测试 / 数据边界仍描述旧快照行为,均为一轮新交付物的新增缺陷),已于第二轮修正(§9.1 #8/#9) |
 | S4.6 | 完成 | TODO.md 重写为路线图 | `npm run test:smoke`(读 TODO 的断言) | — |
 | S4.7 | 完成 | phase4 S4.7(全历史+分发扫描:零凭据;个人路径/仓名处置清单);phase2 完成夹具脱敏 32 处 | `grep -rn "ThornWu\|thornwu" lib/ scripts/smoke-load.mjs test/`(零命中) | git 历史中的仓名保留(改写需单独授权);dev-notes.md:4 一处路径建议所有者顺手改 |
@@ -133,11 +133,11 @@ R01 的路线取舍(移除而非可选保留)与理由见 phase1 §2 R01 节;恢
 
 | 维度 | 状态 |
 | --- | --- |
-| 许可证 | **未定,发布阻塞**(S4.4;候选 MIT/Apache-2.0 对比在 phase4 S4.4 与 README) |
-| 公开内容检查 | 完成:分发 5 文件零凭据/零个人路径/零个人仓名;git 历史含历史仓名(改写需单独授权,默认不做);`memory/`、`review/`、`REMEDIATION_PLAN.md` 未跟踪未提交,公开策略待所有者 |
-| CI | 配置就位(零 token),**远端未跑**;本地同等命令全绿 |
-| 自动化 | 296 项全绿(§4) |
-| 实际发布 | **未执行**(未 commit/push/pack 发布;候选 tarball 已核验并删除) |
+| 许可证 | **已定:MIT**(2026-10-03 所有者决定;LICENSE 落盘,package.json/README 同步,pack 白名单断言;原发布阻塞解除) |
+| 公开内容检查 | 完成:分发 6 文件(+LICENSE)零凭据/零个人路径/零个人仓名;git 历史含历史仓名(改写需单独授权,默认不做);`memory/`、`review/` 已 gitignore 保持私有;`REMEDIATION_PLAN.md`、`notes/` 已随整改提交 |
+| CI | 配置就位(零 token);**远端已跑全绿**(三轮 push/PR 共 6 次触发,每次 4 job 全 success) |
+| 自动化 | 336 项全绿(§4:296→315→336) |
+| 实际发布 | **部分执行**:commit/push 已完成(79fe587 二轮、af2b9fc 三轮、MIT 收尾见最新提交);npm publish 未执行(待所有者,见待决 #3) |
 | 版本 | 0.8.0 提案已同步三处版本源;定版待所有者 |
 
 **Alpha 发布说明素材(S5.6)**:
@@ -146,18 +146,18 @@ R01 的路线取舍(移除而非可选保留)与理由见 phase1 §2 R01 节;恢
 - 已知限制:只读(无写回/拖卡/Agent 工具/webhook);数据上限(单板 200 / 列表 300 / 字段 40 / 每卡字段值 30、标签 20、负责人 10,超限有提示不假称全量);看板列依赖名为 `Status` 的单选字段(缺失退化为单列+提示);宿主侧错误文案为中文(以错误码为锚);dsh 处于 rc 期,升级 dsh 后异常先查 README 排障。
 - 升级步骤:`git pull`(link: 协议无需重装)→ 重启 dsh web;旧 snapshot/v1 自动清理,无需处理。
 - 回退步骤:`git checkout f6ad528`(0.7.0)→ 重启 dsh web;浏览器侧无不可逆迁移。
-- 候选源码 ↔ 分发物对应:候选源码 = 分支 `fe/thornwu-kanban-global` 当前**未提交工作区**(HEAD f6ad528 + 本轮改动);分发物 = `npm pack` 产物 5 文件(shasum `7bcf9b98…`)。**发布前须先 commit 生成可引用的 commit hash 并重打包核验 shasum**,使源码-分发物对应可审计。
+- 候选源码 ↔ 分发物对应:候选源码 = 分支 `fe/thornwu-kanban-global` 提交(一轮整改起于 f6ad528 工作区,后经 79fe587(二轮)/af2b9fc(三轮)/MIT 收尾提交落盘);分发物 = `npm pack` 产物 6 文件(+LICENSE)。发布前以最终 commit 重新打包并记录 shasum,使源码-分发物对应可审计。
 
 **待所有者决定**(汇总自 phase4 §3 及各阶段,无遗漏核对过一遍):
 
-1. 许可证选择(发布阻塞;S4.4)。
+1. ~~许可证选择~~ **已决(2026-10-03):MIT**,LICENSE 已落盘并推送。
 2. 版本定版:0.8.0 提案确认或改号(CHANGELOG 已标注;三处版本源已同步)。
 3. 包名 / `@local/` 前缀 / `private` / 是否 npm publish(S4.3)。
 4. `homepage`/`bugs` 占位替换(S4.3)。
 5. 安全报告渠道(SECURITY.md 待定;S4.5)。
 6. git 历史中个人仓名是否 history rewrite(需单独授权,默认不做;S4.7)。
-7. `memory/`、`review/`、`REMEDIATION_PLAN.md`、`notes/` 的公开策略(gitignore 或补跟踪;S4.7);若公开,`review/` 内容先自查一遍是否含真实 token 片段(phase4 未读取其内容细节)。
-8. 本轮全部改动的 commit/push 授权(当前全部在工作区未提交;push 后触发 CI 首跑)。
+7. `memory/`、`review/` 的公开策略(现已 gitignore;若公开,`review/` 内容先自查一遍是否含真实 token 片段)。
+8. ~~commit/push 授权~~ **已执行**(79fe587 二轮 / af2b9fc 三轮 / MIT 收尾,远端 CI 全绿)。
 9. 低风险提示:公开前顺手核对 dsh 官方包 license 字段(实现参考过其契约;phase4 S4.4);`notes/dev-notes.md:4` 的个人参考路径可顺手改写为通用写法(phase4 S4.7,不在他人所有权内故未代改)。
 
 **遗留门槛(真机验收)入口**:见 §5 表(S5.2–S5.5 + phase1/2/3 遗留真机项 + CI 远端首跑 + S5.7 原审查 agent 验收)。
