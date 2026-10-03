@@ -406,3 +406,84 @@ test("R2host-P2 命中保真:getBoard 命中保留完整性口径字段(核对�
   assert.equal(second.board.contentMissing, 1, "命中保留 board.contentMissing");
   assert.equal(second.board.fieldValuesTruncated, 1, "命中保留 board.fieldValuesTruncated");
 });
+
+// ── 第三轮整改(R3host):凭据快照 —— 盖章指纹与实际请求凭据同刻一致 ──────────
+
+/**
+ * R3host-P1 复现原理(先红后绿):listProjects/getBoard 的同步段捕获指纹(标签),
+ * 而 produce 在 `Promise.resolve().then(...)` 微任务里才执行、ghGraphQL 在那一刻才
+ * readToken(env) 取凭据。测试在「同步段已结束、微任务尚未执行」的确定窗口内翻转
+ * 注入 env 的 GITHUB_TOKEN:修复前请求会用轮换后的凭据、结果却以发起时指纹入缓存;
+ * 修复后整链(指纹标签 + 实际 Authorization)用同一份发起时快照。不需要闸/sleep ——
+ * 微任务边界本身就是那个「亚毫秒窗口」的确定性放大。
+ */
+test("R3host-P1 凭据同刻:getBoard 在途窗口内轮换 token,实际请求仍用发起时身份的凭据", async () => {
+  const tokenA = "r3-board-token-A";
+  const tokenB = "r3-board-token-B";
+  const env = { GITHUB_TOKEN: tokenA };
+  const seenAuth = [];
+  const pageOf = (identity) => viewerBoardPage({ number: 7, items: [boardItemNode({ id: `i-${identity}`, title: `身份${identity}的卡`, optionId: "o1" })], totalCount: 1 });
+  const service = new host.GithubKanbanService({
+    env,
+    cache: { now: () => 1_000_000 }, // 冻结时钟:只考察身份一致性,不考察 TTL
+    fetchImpl: async (_url, init) => {
+      // 替身按实际收到的 Authorization 凭据生成数据:数据身份 = 请求凭据身份
+      seenAuth.push(init.headers.Authorization);
+      const identity = init.headers.Authorization === `Bearer ${tokenA}` ? "A" : "B";
+      return { ok: true, status: 200, json: async () => pageOf(identity) };
+    },
+  });
+  const pending = service.getBoard({ projectNumber: 7 }); // 同步段:指纹已按 tokenA 捕获
+  env.GITHUB_TOKEN = tokenB; // produce 微任务尚未执行:模拟在途窗口内轮换身份
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.deepEqual(seenAuth, [`Bearer ${tokenA}`], "实际请求凭据 = 发起时指纹对应的 token(修复前:执行时读到轮换后的 B)");
+  env.GITHUB_TOKEN = tokenA; // 轮换回 A(TTL 内):A 身份的调用命中缓存
+  const hit = await service.getBoard({ projectNumber: 7 });
+  assert.equal(seenAuth.length, 1, "TTL 内命中,不再发请求");
+  assert.equal(hit.board.columns[0].items[0].title, "身份A的卡", "缓存数据与盖章身份一致(修复前:B 凭据拉的数据被盖上 A 的指纹,A 调用错拿)");
+});
+
+test("R3host-P1 凭据同刻:listProjects 同样:盖章指纹与实际请求凭据是同一刻的同一值", async () => {
+  const tokenA = "r3-list-token-A";
+  const tokenB = "r3-list-token-B";
+  const env = { GITHUB_TOKEN: tokenA };
+  const seenAuth = [];
+  const service = new host.GithubKanbanService({
+    env,
+    cache: { now: () => 1_000_000 },
+    fetchImpl: async (_url, init) => {
+      seenAuth.push(init.headers.Authorization);
+      const identity = init.headers.Authorization === `Bearer ${tokenA}` ? "A" : "B";
+      return { ok: true, status: 200, json: async () => viewerProjectsPage([projectNode({ id: `p-${identity}`, number: 1, title: `身份${identity}的项目` })]) };
+    },
+  });
+  const pending = service.listProjects();
+  env.GITHUB_TOKEN = tokenB;
+  const result = await pending;
+  assert.equal(result.ok, true);
+  assert.deepEqual(seenAuth, [`Bearer ${tokenA}`], "请求按发起时凭据快照发出(修复前:用 B 的凭据拉数据)");
+  env.GITHUB_TOKEN = tokenA;
+  const hit = await service.listProjects();
+  assert.equal(seenAuth.length, 1, "TTL 内命中");
+  assert.deepEqual(hit.projects.map((project) => project.title), ["身份A的项目"], "命中数据与盖章身份一致(修复前:B 数据被盖 A 指纹)");
+});
+
+test("R3host-P1 凭据同刻:发起时有 token、在途窗口内被清空,请求按快照完成而非误报 token_missing", async () => {
+  const env = { GITHUB_TOKEN: "r3-vanish-token" };
+  let fetchCount = 0;
+  const service = new host.GithubKanbanService({
+    env,
+    cache: { now: () => 1_000_000 },
+    fetchImpl: async () => {
+      fetchCount += 1;
+      return { ok: true, status: 200, json: async () => viewerProjectsPage([projectNode({ id: "p1", number: 1, title: "快照身份的项目" })]) };
+    },
+  });
+  const pending = service.listProjects();
+  delete env.GITHUB_TOKEN; // 在途窗口内 token 被清空:tokenMissing 早退必须按快照判定
+  const result = await pending;
+  assert.equal(result.ok, true, "按发起时的凭据快照完成请求(修复前:执行时读到空 token,误报 token_missing)");
+  assert.equal(fetchCount, 1, "请求真实发出");
+  assert.deepEqual(result.projects.map((project) => project.title), ["快照身份的项目"]);
+});

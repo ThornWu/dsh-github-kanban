@@ -383,3 +383,135 @@ test("R2 空列表:viewer 0 项目 + 来源失败/截断时,「暂无项目」�
   assert.ok(text.includes("octocat/alpha"), "点名截断来源");
   await panel.unmount();
 });
+
+// ── R3(第三轮整改)回归:轮询/切换的看板成功不得掩盖链级失败(2026-10-03) ────────
+// 审查结论(P2):刷新时 listProjects 瞬态 503 → FAILED(stage:list) → error 态,但
+// 旧 projects 列表仍在场 → 30s 轮询照常触发 → getBoard 成功 → BOARD_OK 无条件翻
+// ready 清错 —— 列表级失败被「部分成功化」,项目列表停在旧数据,用户以为一切正常。
+// 新语义:链级(status/list/bootstrap)失败在场时,看板成功只上账看板数据,不翻
+// ready、不清错;错误保持可见,直到整链重新成功或用户手动刷新。board 级失败(看板
+// 请求自己的失败)被轮询成功恢复是合法路径,保留。
+
+test("R3 掩盖:刷新后 list 503,轮询的看板成功不得清错/翻 ready(错误保持可见)", async () => {
+  const world = twoProjectWorld();
+  let listMode = "ok";
+  const listCalls = [];
+  const boardCalls = [];
+  const panel = await mountPanel({
+    face: {
+      status: async () => gatewayOk(statusResult()),
+      listProjects: async (request) => {
+        listCalls.push(request);
+        if (listMode === "fail") return gatewayOk({ ok: false, error: { code: "http_error", message: "GitHub API HTTP 503。" } });
+        return gatewayOk(world.projects);
+      },
+      getBoard: async (request) => {
+        boardCalls.push(request);
+        return gatewayOk(world.boards[request.projectNumber] ?? world.boards[7]);
+      },
+    },
+  });
+  assert.ok(panel.text().includes("AlphaColumn"), "首载成功(旧列表在场)");
+  assert.equal(boardCalls.length, 1);
+
+  listMode = "fail"; // 刷新的列表拉取 503(http_error 非瞬态 → 无自愈轮干扰,确定性推进)
+  await panel.fireClick(panel.reloadButton());
+  await panel.settle();
+  const errorText = panel.text();
+  assert.ok(errorText.includes("读取失败") && errorText.includes("[http_error]"), `刷新的列表 503 → 错误态:${errorText.slice(0, 80)}`);
+  assert.ok(!errorText.includes("AlphaColumn"), "错误优先级最高,看板区退位");
+
+  await panel.advance(30_000); // 轮询 tick:getBoard 成功(旧实现:BOARD_OK 无条件翻 ready 清错)
+  const afterTick = panel.text();
+  assert.equal(boardCalls.length, 2, "轮询确实发生且 getBoard 成功");
+  assert.ok(afterTick.includes("读取失败") && afterTick.includes("[http_error]"), `看板成功不得清除列表错误:${afterTick.slice(0, 80)}`);
+  assert.ok(!afterTick.includes("AlphaColumn"), "未翻 ready:错误态下看板区不上屏");
+
+  await panel.advance(30_000); // 第二个 tick:错误依旧(不是一次性的时序运气)
+  assert.ok(panel.text().includes("读取失败"), "错误持续可见");
+  assert.equal(boardCalls.length, 3, "轮询照常节流(每 tick 恰一次,不叠发)");
+
+  listMode = "ok"; // 用户手动刷新:整链成功 = 认可的恢复路径
+  await panel.fireClick(panel.reloadButton());
+  await panel.settle();
+  const recovered = panel.text();
+  assert.ok(recovered.includes("AlphaColumn") && !recovered.includes("读取失败"), "整链成功后恢复正常");
+  assert.equal(listCalls.length, 3, `首载 1 + 失败刷新 1 + 恢复刷新 1:${listCalls.length}`);
+  assert.equal(listCalls[2].noCache, true, "手动刷新整链带 noCache");
+  await panel.unmount();
+});
+
+test("R3 掩盖(切换路径):list 级错误期手动切换项目,看板成功同样不得清错", async () => {
+  const world = twoProjectWorld();
+  let listMode = "ok";
+  const panel = await mountPanel({
+    face: {
+      status: async () => gatewayOk(statusResult()),
+      listProjects: async () => (listMode === "fail" ? gatewayOk({ ok: false, error: { code: "http_error", message: "GitHub API HTTP 503。" } }) : gatewayOk(world.projects)),
+      getBoard: async (request) => gatewayOk(world.boards[request.projectNumber] ?? world.boards[7]),
+    },
+  });
+  assert.ok(panel.text().includes("AlphaColumn"), "首载成功");
+  listMode = "fail";
+  await panel.fireClick(panel.reloadButton());
+  await panel.settle();
+  assert.ok(panel.text().includes("读取失败"), "列表 503 → 错误态(旧列表仍在切换器里)");
+
+  await panel.fireChange(panel.projectSelect(), "#9"); // 错误期切换:SELECT + loadBoard(#9) 成功
+  await panel.settle();
+  const after = panel.text();
+  assert.ok(after.includes("读取失败") && after.includes("[http_error]"), `切换触发的看板成功不清列表错误:${after.slice(0, 80)}`);
+  assert.ok(!after.includes("BetaColumn"), "不翻 ready(旧实现:BOARD_OK 把面板翻回 ready)");
+  await panel.unmount();
+});
+
+test("R3 根因优先:list 级错误期的看板失败不得顶替根因错误(stage 保持 list)", async () => {
+  const world = twoProjectWorld();
+  let listMode = "ok";
+  let boardMode = "ok";
+  const panel = await mountPanel({
+    face: {
+      status: async () => gatewayOk(statusResult()),
+      listProjects: async () => (listMode === "fail" ? gatewayOk({ ok: false, error: { code: "http_error", message: "GitHub API HTTP 503。" } }) : gatewayOk(world.projects)),
+      getBoard: async (request) => {
+        if (boardMode === "fail") return gatewayOk({ ok: false, error: { code: "http_error", message: "GitHub API HTTP 401。" } });
+        return gatewayOk(world.boards[request.projectNumber] ?? world.boards[7]);
+      },
+    },
+  });
+  assert.ok(panel.text().includes("AlphaColumn"), "首载成功");
+  listMode = "fail";
+  await panel.fireClick(panel.reloadButton());
+  await panel.settle();
+  assert.ok(panel.text().includes("503"), "列表 503 错误在场");
+
+  boardMode = "fail";
+  await panel.advance(30_000); // 轮询 tick:这次 getBoard 失败(401)
+  const after = panel.text();
+  assert.ok(after.includes("503"), `根因(列表 503)保持可见:${after.slice(0, 90)}`);
+  assert.ok(!after.includes("401"), "从属的看板 401 不顶替根因错误(顶替后下一轮看板成功就能清错,掩盖路径的变体)");
+  await panel.unmount();
+});
+
+test("R3 保留路径:board 级错误期的轮询成功仍恢复看板(不因门控误伤)", async () => {
+  const world = twoProjectWorld();
+  let boardMode = "fail";
+  const panel = await mountPanel({
+    face: {
+      status: async () => gatewayOk(statusResult()),
+      listProjects: async () => gatewayOk(world.projects),
+      getBoard: async (request) => {
+        if (boardMode === "fail") return gatewayOk({ ok: false, error: { code: "http_error", message: "GitHub API HTTP 401。" } });
+        return gatewayOk(world.boards[request.projectNumber] ?? world.boards[7]);
+      },
+    },
+  });
+  const errorText = panel.text();
+  assert.ok(errorText.includes("读取失败") && errorText.includes("401"), "看板自身失败 → 错误态(stage=board)");
+
+  boardMode = "ok";
+  await panel.advance(30_000); // 轮询 tick:看板成功 → 恢复(审查确认的合法路径,必须保留)
+  const recovered = panel.text();
+  assert.ok(recovered.includes("AlphaColumn") && !recovered.includes("读取失败"), "board 级错误被轮询成功恢复");
+  await panel.unmount();
+});

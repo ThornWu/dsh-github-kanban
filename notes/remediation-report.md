@@ -27,8 +27,8 @@
 | S0.3 | 完成 | README「数据上限」表;代码核实:`MAX_ITEMS=200`、`MAX_PROJECTS=300`、`FIELDS_PAGE_SIZE=40`、fieldValues/users/labels 单页 30/10/20;Status 字段名硬约束 `STATUS_FIELD_NAME="Status"`(缺失→单列+三档 hint,不猜测替代字段);只读边界(零 mutation,README「权限说明」) | `grep -n "MAX_ITEMS\|MAX_PROJECTS\|FIELDS_PAGE_SIZE\|STATUS_FIELD_NAME" lib/index.js`;test/service「分页拉满上限→incomplete」 | — |
 | S0.4 | 完成 | README「兼容版本」:已验证 = dsh 0.2.0-rc.1 + rc.2(2026-10-01 真机,phase4/dev-notes)、Node 24.x(开发自检)、dsh 自带前端;待验证 = dsh 其他 rc、Node 18–23(运行下限 18)、独立浏览器矩阵;开发/测试 Node ≥20.19(jsdom 29 约束,README「开发与测试」已注明) | 见 phase3 §2(React 版本核验链) | 真机版本矩阵归 S5.2 |
 | S0.5 | 完成 | 本轮终验全部通过(§4),无失败项需要记为基线缺口;审查基线的 110/110 smoke 在阶段 1 扩到 152、阶段 2 扩到 204(均为全绿) | §4 命令清单 | — |
-| S1.1–S1.9 | 完成 | phase1 §1 映射表(lib/client.js 偏好读写 255–299 等;lib/index.js withTimeout/ghGraphQL/dedupe/分来源收集/缓存) | phase1 §1;`npm test` | 真机项见 §5;二轮审查在 S1.3/S1.4/S1.7/S1.9 范围发现 6 处残留缺陷(在途跨身份复用、加入者回退缓存、命中丢来源警告、重挂载/整链刷新旧链回包、空列表隐藏来源),已于第二轮修复(§9.1 #2–#7) |
-| S2.1–S2.9 | 完成 | phase2 §1 映射表(不拆文件/pageAll/控制器/状态机/coerce/共享查询片段/wire 契约核验) | phase2 §1;`npm test` | 真机项见 §5;S2.6 一轮核验的缺口(客户端调用侧实参数量判定未覆盖,清单加参后调用面未同步)系二轮 P1 新增缺陷,已于第二轮修复(§9.1 #1) |
+| S1.1–S1.9 | 完成 | phase1 §1 映射表(lib/client.js 偏好读写 255–299 等;lib/index.js withTimeout/ghGraphQL/dedupe/分来源收集/缓存) | phase1 §1;`npm test` | 真机项见 §5;二轮审查在 S1.3/S1.4/S1.7/S1.9 范围发现 6 处残留缺陷(在途跨身份复用、加入者回退缓存、命中丢来源警告、重挂载/整链刷新旧链回包、空列表隐藏来源),已于第二轮修复(§9.1 #2–#7);三轮审查在 S1.9 再发现 1 处 P1(指纹与实际请求凭据非同刻,轮换微任务窗口内缓存错标身份,已修,§10.1 #1),S1.6 恢复口径的 1 处 P2(看板成功掩盖列表刷新失败)修复落在 S2.3 转换表(§10.1 #2) |
+| S2.1–S2.9 | 完成 | phase2 §1 映射表(不拆文件/pageAll/控制器/状态机/coerce/共享查询片段/wire 契约核验) | phase2 §1;`npm test` | 真机项见 §5;S2.6 一轮核验的缺口(客户端调用侧实参数量判定未覆盖,清单加参后调用面未同步)系二轮 P1 新增缺陷,已于第二轮修复(§9.1 #1);三轮审查在 S2.3 转换表发现看板轮询/切换的成功可掩盖链级错误(P2,S1.6 恢复口径),已按 error.stage 门控修复(§10.1 #2) |
 | S3.1–S3.6 | 完成 | phase3 §3 映射表(test/{pure,service,cache,contract,syntax}.test.mjs + test/react/ + ci.yml + package.json scripts) | `npm test`(一轮 74+17+1 项;二轮后 smoke 213 + unit 81 + react 20 + pack 1,§9.2) | —;二轮审查发现的替身缺口(smoke/contract 替身不校验实参数量,致参数契约缺陷漏检)已由 strictArgumentFace 同严闸补齐(§9.1 #1) |
 | S3.7 | 完成(矩阵 12 行:10 行自动化,2 行的真机半边待验收) | phase3 §4 逐行映射表 | `npm test` | 行 1/11 的真实凭据/真实宿主半边、行 12 数据一致性 → S5.3/S5.5 |
 | S4.1 | 完成(截图除外) | README.md(phase4 S4.1;本轮收官校对快照/超时/LRU/警告/恢复入口描述与实现一致,见 §7 第 9 条) | 通读比对 | 面板截图需真机环境,列为发布前可选项(S5.2 时顺手补) |
@@ -77,7 +77,7 @@ R01 的路线取舍(移除而非可选保留)与理由见 phase1 §2 R01 节;恢
 | `npm pack --dry-run` | 5 文件(见 §6),版本 0.8.0 |
 | 实际 `npm pack` + 解包核验 | 见 §6;tarball 验后已删除 |
 
-合计 **296 项检查全绿**(smoke 204 + node:test 92),严格模式同样全绿。(以上为第一轮终验数字;第二轮整改后的合并终验见 §9.2:315 项全绿。)**CI 未在远端运行**:`.github/workflows/ci.yml` 已就位(Node 20/22/24 矩阵 + strict + package job,零 token),本地同等命令通过——按计划 §6 口径,不能报告远端 CI 通过;推送后首跑待观察(phase3 §7)。
+合计 **296 项检查全绿**(smoke 204 + node:test 92),严格模式同样全绿。(以上为第一轮终验数字;第二轮整改后的合并终验见 §9.2:315 项全绿;第三轮整改后的合并终验见 §10.2:336 项全绿。)**CI 未在远端运行**:`.github/workflows/ci.yml` 已就位(Node 20/22/24 矩阵 + strict + package job,零 token),本地同等命令通过——按计划 §6 口径,不能报告远端 CI 通过;推送后首跑待观察(phase3 §7)。
 
 日志:无仓库外临时文件依赖;复跑入口即上述命令。smoke 单项失败时的输出自带用例名与上下文(`node scripts/smoke-load.mjs` 直接可读)。
 
@@ -208,6 +208,41 @@ CLIENTFIX(round2-client §7,4 条):
 4. **空列表 + repo_missing 组合的真机可达性**:取决于宿主 listProjectsImpl 的来源合并逻辑,本轮以 fixtures 的 wire 形状为契约,真机可达性归阶段 5 验证。
 
 另有 round2-client §8 的 3 条真机待验(真网关下 `listProjects({})` 接受性、真实 keyed 卸载下的代际守卫表现、严格替身闸与 dsh-api-gateway 升级后的规则同步)并入本报告 §5 真实环境清单跟踪,不属相邻问题。
+
+## 10. 第三轮整改(2026-10-03 PR #3 审查回执)
+
+本节为 §9 之后的补记。第二轮 9 项修复合并后,独立审查(PR #3,基准 036413f→79fe587)结论:**1 P1 + 1 P2**,均为前两轮修复的收口残留;同时复核确认二轮的参数数量、去重回退、缓存命中警告、刷新/卸载代际等修复有效(对应 §9.1 #1/#3/#4/#5–#6)。审查方 315/315 本地复跑通过、远端 CI 8 job 全过、未重做真机验收。两个修复 agent(HOSTFIX / CLIENTFIX)按「先红后绿」完成两项修复;每项的机理、复现序列、红/绿证据与取舍的权威记录在 `notes/remediation/round3-host.md`、`round3-client.md`,本节只做汇总与交叉引用。
+
+### 10.1 审查发现 → 修复状态映射(2/2 已修)
+
+| # | 审查发现 | 级别 | 遗留/新增 | 修复位置 | 复现 → 修复证据 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 固定了指纹,但未固定实际请求凭据(审查锚点 79fe587 `lib/index.js:857-860`):指纹在调用时捕获,实际 Authorization 要等 produce 微任务执行时才读 env;身份恰在该窗口内轮换时,旧指纹给新凭据取回的数据盖章,后续 TTL 命中跨身份吐数据 | P1 | 遗留(S1.9 二轮残留;round2-host §5.1 留档的相邻问题被本轮审查升级为 P1) | `lib/index.js`:新增 `credentialSnapshot()`(839 行,token 与指纹同刻、由同一 token 值算出);token 快照穿透 listProjectsImpl/getBoardImpl → pageAll → ghGraphQL(Authorization 用快照值);undefined=未快照回退执行时读 env(兼容自检注入面)、null=快照时无 token 按快照早退;sanitizeError 改对准实际发出的凭据脱敏;status()/tokenFingerprint/启动日志按「即时口径自洽」不并入快照链(取舍见 round3-host §3/§5) | round3-host §2–§4:红 = cache 新增「R3host」×3(getBoard/listProjects 轮换窗口各 1——微任务窗口翻转注入 token,fetch 替身记录实际 Authorization 与缓存盖章比对,轮换回 A 后 TTL 命中吐他身份数据;tokenMissing 早退误报 1),修复前 `node --test test/cache.test.mjs` 20 pass / 3 fail;绿 = cache 23/23、全套件全绿,dedupe 键格式/命中校验/LRU 记账未改 |
+| 2 | 看板轮询会掩盖项目列表刷新失败(审查锚点 79fe587 `lib/client.js:882-887`):30s 轮询回调只 loadBoard、不看 phase;list 级错误期看板成功经 BOARD_START/BOARD_OK 两步清错翻 ready,列表失败从 UI 消失、列表停在旧数据 | P2 | 遗留(一轮轮询与错误恢复口径的交互残留,一/二轮均未覆盖该转换语义) | `lib/client.js` boardTransition 三转换(BOARD_OK/BOARD_START/FAILED)按 error.stage 门控——链级(status/list/bootstrap)错误在场时,看板生命周期事件动不了全局 phase/error;board 级错误不受影响;看板数据照常上账,重试预算与请求模式零变化。方案论证含审查未点名的切换器入口变体与「FAILED(board) 顶替根因」第二变体(已一并钉住),弃「轮询回调改跑整链」候选的四条理由见 round3-client §2 | round3-client §1/§4:红 = react「R3」节 4 用例中 3 红(轮询掩盖、切换路径掩盖、根因被 board 错误顶替;第 4 用例为 board 级保留路径守卫,新旧实现都必须绿)+ smoke 临时还原 79fe587 重跑、226 中恰好红 6(控制器直驱 2 + 转换层 4,无误伤);绿 = react 24/24、smoke 227/227(5r 场景 8/9 + 5r2 转换层,共 +14 检查) |
+
+### 10.2 合并终验数字
+
+两个修复 agent 改动汇合后的最终工作区(2026-10-03 实跑,全部未提交):
+
+- `npm test` **exit 0**:lint(`node --check` lib/index.js + lib/client.js)通过 → smoke **227/227** → unit **84/84**(pure 23 + service 21 + cache 23 + contract 16 + syntax 1)→ react **24/24** → pack:check **1/1**;合计 **336 项全绿**(第二轮 315 + 第三轮 21:smoke +14、cache +3、react +4)。
+- `npm run test:strict`(`--unhandled-rejections=strict`)**0 失败**(smoke 227 + node:test 109)。
+- 既有用例处理(如实):**零改写、零删除**——两个 agent 均声明既有 smoke/react/cache 用例不经修改通过;唯一接近冲突的既有用例 pure S3.1「FAILED(board)→BOARD_START 清错误」驱动的是 board 级口径,与门控的保留语义一致,不经修改转绿(该文件本轮禁改,门控形态也因此收窄为「只清 board 级」,见 round3-client §2/§5)。
+
+### 10.3 相邻问题与已知取舍(只报告,未修)
+
+同 §9.3 口径:以下为两个修复 agent 过程中报告但**未扩 scope 修复**的问题,原样汇总自 round3-host §6 与 round3-client §6。它们**不计入**上述 2 项、不冒充已修,列为已知取舍/后续候选:
+
+HOSTFIX(round3-host §6,2 条相邻问题;同节另有 2 条口径说明,非缺陷——浏览器半边不涉及本问题、`apply()` 启动日志时序经分析不视为缺陷):
+
+1. **加入者返回值可能旧于缓存**(R2host §5.2 遗留):去重语义固有;round3 复核仍未变,缓存单调后由下一轮轮询/刷新自愈。
+2. **命中返回共享信封对象引用**(R2host §5.3 遗留):调用方(浏览器控制器)只读,未加防御性拷贝;round3 复核仍未变。
+
+CLIENTFIX(round3-client §6,4 条):
+
+1. **链级错误期的轮询仍每 30s 拉一次不可展示的看板**(后续候选):单 interval、可见性门控、inFlight 节流,有界但零收益(链恢复时整链会重拉看板,期间上账的数据用不上);本轮保留是为让审查点名的复现场景(轮询 tick → getBoard 成功 → 错误仍在)以同机制红→绿,「停轮」作为独立行为变化留给下轮论证。
+2. **轮询在途期间刷新按钮被禁用**(round2 §7.2 既有项):链级错误期一次轮询看板请求会把用户唯一的恢复入口(手动刷新)禁用至多 20s(deadline),而该请求的结局无论如何清不了错;与发现 1 同根,停轮即可一并消除。
+3. **loading 期轮询与链内看板请求的窄窗并发**:轮询在链尚未走到 loadBoard 时 tick,可能与链自己的看板请求并发一次(≤2,loadSeq 收口,后发者胜);修复前后行为一致,非本轮引入。
+4. **round2 §7.1(dispatch 在 disposed 检查前落状态)与 §7.3(call() 形参展开的潜在误用点)仍然成立**,未在本轮处理。
 
 ---
 

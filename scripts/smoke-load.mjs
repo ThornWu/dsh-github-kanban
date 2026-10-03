@@ -2509,6 +2509,166 @@ const makePolling = (isVisible = () => true) => {
     );
     controller.dispose();
   }
+  // 场景 8(R3):轮询/切换的看板成功不得掩盖链级失败 —— 门控在 BOARD_OK/FAILED 转换。
+  // 场景:健康面板 → 刷新时 list 503 → 错误态(旧列表在场,轮询仍注册)→ 轮询 tick。
+  {
+    const registered = [];
+    const polling = {
+      intervalMs: 30_000,
+      setInterval: (callback, ms) => { registered.push({ callback, ms }); return () => registered.pop(); },
+      isVisible: () => true,
+    };
+    let listMode = "ok";
+    let boardMode = "ok";
+    const api = {
+      status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
+      listProjects: async () =>
+        listMode === "fail"
+          ? { ok: false, error: { code: "http_error", message: "GitHub API HTTP 503。" } }
+          : { ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] },
+      getBoard: async () =>
+        boardMode === "fail"
+          ? { ok: false, error: { code: "http_error", message: "GitHub API HTTP 401。" } }
+          : okBoard("轮询的新卡"),
+    };
+    const { controller, settle } = makeHarness({ api, polling });
+    controller.start();
+    await settle();
+    check("控制器(R3):健康期看板正常上账(门控不影响正常路径)", controller.getSnapshot().phase === "ready" && registered.length === 1, `phase=${controller.getSnapshot().phase} timers=${registered.length}`);
+
+    listMode = "fail";
+    controller.reload(); // 刷新:list 503 → 链级错误(非瞬态 → 无自愈轮干扰)
+    await settle();
+    const listError = controller.getSnapshot();
+    check(
+      "控制器(R3):刷新的 list 失败 → 错误态(stage=list),轮询仍注册(旧列表在场)",
+      listError.phase === "error" && listError.error?.stage === "list" && registered.length === 1,
+      JSON.stringify({ phase: listError.phase, stage: listError.error?.stage, timers: registered.length }),
+    );
+
+    registered[0].callback(); // 轮询 tick:看板成功
+    await settle(2);
+    const afterTick = controller.getSnapshot();
+    check(
+      "控制器(R3):轮询的看板成功不清链级错误 —— 数据上账、phase/错误保持",
+      afterTick.phase === "error" && afterTick.error?.stage === "list" && afterTick.error?.text.includes("503") &&
+        afterTick.board?.columns?.[0]?.items?.[0]?.title === "轮询的新卡" && afterTick.boardInFlight === false,
+      JSON.stringify({ phase: afterTick.phase, stage: afterTick.error?.stage, title: afterTick.board?.columns?.[0]?.items?.[0]?.title }),
+    );
+
+    boardMode = "fail";
+    registered[0].callback(); // 轮询 tick:看板失败(401)
+    await settle(2);
+    const afterFail = controller.getSnapshot();
+    check(
+      "控制器(R3):链级错误期的看板失败不顶替根因(stage 仍 list、文案仍 503)",
+      afterFail.phase === "error" && afterFail.error?.stage === "list" && afterFail.error?.text.includes("503") &&
+        !afterFail.error?.text.includes("401") && afterFail.boardInFlight === false,
+      JSON.stringify({ stage: afterFail.error?.stage, text: afterFail.error?.text }),
+    );
+
+    listMode = "ok";
+    boardMode = "ok";
+    controller.reload(); // 用户手动刷新:整链成功 = 认可的恢复路径
+    await settle();
+    const recovered = controller.getSnapshot();
+    check("控制器(R3):整链成功后恢复正常(ready、错误清空)", recovered.phase === "ready" && recovered.error === null, JSON.stringify({ phase: recovered.phase }));
+    controller.dispose();
+  }
+  // 场景 9(R3 保留路径):board 级错误期的轮询成功仍恢复看板(门控只针对链级错误)
+  {
+    const registered = [];
+    const polling = {
+      intervalMs: 30_000,
+      setInterval: (callback, ms) => { registered.push({ callback, ms }); return () => registered.pop(); },
+      isVisible: () => true,
+    };
+    let boardMode = "fail";
+    const api = {
+      status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
+      listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
+      getBoard: async () => (boardMode === "fail" ? { ok: false, error: { code: "http_error", message: "GitHub API HTTP 401。" } } : okBoard("恢复的卡")),
+    };
+    const { controller, settle } = makeHarness({ api, polling });
+    controller.start();
+    await settle();
+    const errored = controller.getSnapshot();
+    check("控制器(R3):看板自身失败 → 错误态(stage=board)", errored.phase === "error" && errored.error?.stage === "board", JSON.stringify({ phase: errored.phase, stage: errored.error?.stage }));
+    boardMode = "ok";
+    registered[0].callback(); // 轮询 tick:看板成功 → 恢复(合法路径,保留)
+    await settle(2);
+    const recovered = controller.getSnapshot();
+    check(
+      "控制器(R3):board 级错误仍被轮询成功恢复(ready + 新卡上账)",
+      recovered.phase === "ready" && recovered.error === null && recovered.board?.columns?.[0]?.items?.[0]?.title === "恢复的卡",
+      JSON.stringify({ phase: recovered.phase }),
+    );
+    controller.dispose();
+  }
+}
+
+// ── 5r2. R3 转换层门控:链级错误对 BOARD_START/BOARD_OK/FAILED(board) 的保持(纯函数直驱) ──
+// 规则集中在一处:链级(status/list/bootstrap)错误在场时,看板请求的生命周期事件
+// (发起/成功/失败)都动不了全局 phase/error —— 单看板成功证明不了列表新鲜。board
+// 级错误是看板请求自己的失败,恢复路径不受影响。
+{
+  const { boardTransition, initialBoardState } = mod.internals;
+  const failEvent = (stage, text) => ({ type: "FAILED", stage, code: "http_error", text, transient: false });
+  const boardOkEvent = { type: "BOARD_OK", board: { columns: [] }, key: "#7", totalCount: 1, incomplete: false };
+  // FAILED(list) → BOARD_OK:错误保持,看板数据上账(不翻 ready)
+  {
+    let state = boardTransition(initialBoardState(), failEvent("list", "读取失败: [http_error] GitHub API HTTP 503。"));
+    state = boardTransition(state, boardOkEvent);
+    check(
+      "转换(R3):list 级错误在场,BOARD_OK 不翻 ready 不清错(看板数据照常上账)",
+      state.phase === "error" && state.error?.text.includes("503") && state.boardKey === "#7" && state.boardInFlight === false,
+      `phase=${state.phase} boardKey=${state.boardKey}`,
+    );
+  }
+  // FAILED(list) → BOARD_START:发起不清错(旧实现:错误文案在在途期凭空消失)
+  {
+    let state = boardTransition(initialBoardState(), failEvent("list", "503"));
+    state = boardTransition(state, { type: "BOARD_START" });
+    check(
+      "转换(R3):BOARD_START 不清链级错误,只标记在途(board 级错误让位是既有口径)",
+      state.phase === "error" && state.error?.text === "503" && state.boardInFlight === true,
+      JSON.stringify({ phase: state.phase, error: state.error?.text }),
+    );
+  }
+  // FAILED(board) → BOARD_START:board 级错误让位(看板请求自己的错误;pure.test S3.1 同口径)
+  {
+    let state = boardTransition(initialBoardState(), failEvent("board", "401"));
+    state = boardTransition(state, { type: "BOARD_START" });
+    check(
+      "转换(R3):BOARD_START 清 board 级错误(新看板请求在途,旧失败让位)",
+      state.phase === "error" && state.error === null && state.boardInFlight === true,
+      JSON.stringify({ phase: state.phase, error: state.error }),
+    );
+  }
+  // FAILED(list) → FAILED(board):根因不被从属失败顶替
+  {
+    let state = boardTransition(initialBoardState(), failEvent("list", "503"));
+    state = boardTransition(state, failEvent("board", "401"));
+    check("转换(R3):链级错误不被 board 级失败顶替(stage 保持根因)", state.error?.stage === "list" && state.error?.text === "503", JSON.stringify(state.error));
+  }
+  // FAILED(board) → BOARD_OK:保留路径(轮询成功恢复看板)
+  {
+    let state = boardTransition(initialBoardState(), failEvent("board", "401"));
+    state = boardTransition(state, boardOkEvent);
+    check("转换(R3):board 级错误仍被 BOARD_OK 正常恢复(ready + 清错)", state.phase === "ready" && state.error === null, `phase=${state.phase}`);
+  }
+  // FAILED(status) → BOARD_OK:status 同属链级(看板成功证明不了 status 健康)
+  {
+    let state = boardTransition(initialBoardState(), failEvent("status", "503"));
+    state = boardTransition(state, boardOkEvent);
+    check("转换(R3):status 级错误同样保持,不被看板成功清除", state.phase === "error" && state.error?.stage === "status", JSON.stringify({ phase: state.phase, stage: state.error?.stage }));
+  }
+  // loading 期(无错误)的 BOARD_OK:正常进 ready(链内路径不受门控)
+  {
+    let state = boardTransition(initialBoardState(), { type: "START" });
+    state = boardTransition(state, boardOkEvent);
+    check("转换(R3):链内(loading 期)BOARD_OK 照常进 ready(门控只针对错误态)", state.phase === "ready" && state.error === null, `phase=${state.phase}`);
+  }
 }
 
 // ── 5s. S2.4 响应契约校验:畸形响应走可观测错误,不无声退化 ─────────────────────
