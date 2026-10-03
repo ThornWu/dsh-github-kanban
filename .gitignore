@@ -9,5 +9,9 @@
 node_modules/
 dist/
 
+# 用户私有工作产物(不随仓库公开)
+memory/
+review/
+
 # 本机
 .DS_Store

@@ -134,10 +134,38 @@ $ node scripts/smoke-load.mjs
 
 新增覆盖:远程清单(3 direct 方法 + strict 占位编解码)、宿主 SRC 面(typertRemote 绑定 + v1 标记)、token 红线(缺失路径结构化错误不抛堆栈、token 只进 Authorization 头、错误文案抹除 token 值、仓库无旧变量名残留)、字段映射(列序 = Status 选项序、空列保留、兜底列、卡片三要素)、面板数据流(mini React 替身按 React 语义驱动真实异步链:token 引导 / 项目切换重拉 / 分列渲染 / 错误态无堆栈)。
 
+## 差异 10(Phase 1.3,补记):轮询在浏览器半边
+
+宿主无从得知浏览器当前选中的项目,轮询只能由浏览器半边发起;定时用 client runner 内建的 timer Service(插件 inject: ["timer"],ctx.interval 同 API),零新增依赖。决策细节见 lib/index.js 头注。(补记于 2026-10-01:当时漏写本节,索引里引用了差异 10。)
+
+## 差异 11(2026-10-01 真机/rc.2 实测):死锁、token 链路、网关信封 —— 三个「静态自检查不到」的坑
+
+dsh 0.2.0-rc.2 下首次真机跑到数据链路,连修四个问题(commit 668b906 / 1f56b3c / 1edecb5 / e1ddedf):
+
+1. **入口 inject 含自装服务全名 = 激活死锁。** `remote.githubKanban` 由本插件 apply 里的 `$mount` 自装,而入口激活会先等 inject 清单里的服务 → apply 永不运行 → 浏览器端 pending "waiting for service: remote.githubKanban"。官方插件敢写 `inject: ["remote","remote.productAnalytics"]` 是因为其描述符由核心包开机 $mount,不存在自装。修复:入口 inject 去全名;取面改走 apply 里 `ctx.inject(["remote","remote.githubKanban"], …)` 的 scoped fiber,等自装服务激活后捕获面(gateway `installNamespace` 的文档明确支持插件 parked on the namespace service,且保证无可见性缺口)。
+2. **生产 token 链路断在依赖注入。** apply() 建服务是空 deps,而 status/listProjectsImpl/getBoardImpl 全读 `this.deps.env` → 生产永远「未配置」(apply 的激活日志却按 process.env 报「已配置」,两头口径不一)。修复:`deps.env` 缺省回退 `process.env`(ghGraphQL 单点 + status)。
+3. **网关 direct 调用回信封 `{ok, value}`,业务结果在 value 里。** 官方插件不消费 direct 返回值(product-analytics 只 fire-and-forget),信封没人拆;本包业务结果恰好也带 ok 字段,透传后组件读 `status.status` = undefined → token 引导分支恒显。修复:按 value 键存在与否拆包(本包业务结果从不带 value 键)。
+4. **QUERY_PROJECTS 的 `includeArchived` 参数真 API 不接受**(Field 'projectsV2' doesn't accept argument 'includeArchived'),Phase 1.2 写查询时想当然,首次打真 API 即暴露;删参,归档过滤交 UI 层。
+
+经验:静态自检(替身 React/ctx)只能验契约形状,验不出激活先后序、环境传递与服务端真实 schema;真机首验后每一层失败都被上一层修复「揭开」,四修三重启才见真实数据。调试利器:页面内 `performance.getEntriesByType('resource')` 找到 RPC 端点,再给 `window.fetch` 打补丁捕获响应体,比猜快。
+
+## 差异 12(2026-10-01,0.4.0 三仓集成):仓库级项目的查询与路由要点
+
+- **repository.projectsV2 = link 到该仓的项目**(Projects v2 没有真正的「仓库所有」项目,owner 永远是 user/org)。`repository(owner,name).projectV2(number: N)` 能解析 link 进来的用户级项目(探针实测),org 项目则**只有**这条路(viewer.projectV2 按 owner 域查号,查不到 org 项目)。
+- 合并策略:viewer 用户级 + 逐仓 link 项目,按项目 id 去重,**保留带仓归属的版本**(切换器可显来源,且路由统一走仓路径)。仓库缺席(repository 为 null,配置错/无权限)跳过该仓,不拖垮整板 —— 与 shape_error 严格区分。
+- closed 过滤:projectsV2 连接没有 includeArchived/closed 参数(schema 不收),查 `closed` 字段在实现层过滤。
+- 配置进 `cordis.patch.yml` 的 insert 行 `config.repos`(owner/name 数组,形状校验、坏条目跳过);token 仍只走环境变量,配置面永不沾凭据。
+
+## 0.5.0 提速(2026-10-01):缓存分层与实测数字
+
+- 实测(本机,三仓配置):冷开 RPC = status 14ms + listProjects 1393ms(并行后单往返窗)+ getBoard 845ms;重开面板切换器 ~1s 出现(纯面板挂载开销,数据瞬时),status/list 走宿主缓存 10-15ms,getBoard 视 TTL(15s)真拉或命中。剩余的 ~1s 面板挂载是 dsh 主座位 remount 的固有成本,非数据链路。
+- 分层:宿主进程内 TTL 缓存(projects 60s / board 15s,**board TTL 刻意 < 轮询 30s** 保证轮询永远真拉)+ in-flight 去重;浏览器 localStorage 快照(`snapshot/v1` 键,乐观首屏 + 选中延续 + 成功写回;无 localStorage/隐私模式全静默降级);刷新按钮 noCache 绕缓存回填。
+- 红线不变:token 只在宿主进程,快照只含看板业务数据(公开元数据)。
+
 ## 升级 dsh 时的核对清单
 
 1. `$G/dsh-client-ui-sidebar-right/lib/types/client/contract/slots.d.ts` 与 `tab-registry.d.ts`(座位 kind/key 与 tab 定义字段)。
 2. `$G/dsh-client-modules/lib/index.js`(dsh.client 扫描、combo 提供、seed 词)。
 3. `$G/dsh-client-ui-session/lib/types/client/index.d.ts`(标准 props 名字)。
-4. `$G/dsh-typert-loader/lib/index.js` + `$G/dsh-typert-protocol/lib/index.js`(远程面路线)。
-5. `$G/cordis/lib/index.js`(Service provide/set/effect)。
+4. `$G/dsh-typert-loader/lib/index.js` + `$G/dsh-typert-protocol/lib/index.js`(远程面路线)+ `$G/dsh-api-gateway/lib/client.js`(direct 调用信封 {ok,value}、installNamespace 的 parked-on-namespace 语义)。
+5. `$G/cordis/lib/index.js`(Service provide/set/effect、运行时 `ctx.inject(deps, cb)` scoped fiber、ReflectService get trap 按调用 fiber 查全名)。

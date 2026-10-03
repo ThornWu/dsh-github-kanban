@@ -1,10 +1,22 @@
-# dsh-github-kanban bundle:一个包同时挂宿主服务与浏览器半边(右栏看板 tab)。
+# dsh-github-kanban bundle:一个包同时挂宿主服务与浏览器半边(全局面板)。
 #
 # 只需一行 insert:client-modules 是按 **loader 行**去扫该包 package.json 的 dsh.client 声明的,
 # 扫到就把 exports["./client"] 提供给浏览器。所以不需要像 agent-team-profile 那样为 UI 单开一行
 # —— 那里是三个独立包,才有三行 insert。
 #
-# Phase 1.2 起在这里加 config:轮询间隔、token 环境变量名等(值一律不含凭据本身)。
+# config 段(会作为 apply(ctx, config) 的第二参传入插件):
+#   repos —— 仓库级项目来源,字符串数组,每项必须是 "owner/name" 格式(允许字母/数字/./-/_)。
+#            link 到这些仓库的 Projects v2 会并进项目切换器(与 viewer 用户级项目按 id 去重,
+#            保留带仓归属的版本)。格式不符的条目会被跳过;仓库不存在/无权限时该来源缺席,
+#            不影响其他来源。默认 [] = 只读 viewer 名下的项目。
+#            示例(按需取消注释,换成你自己的仓库):
+#              repos:
+#                - octocat/hello-world
+#                - octocat/another-repo
+#   cache —— 可选,覆盖宿主缓存 TTL:{ projectsTtlMs: 60000, boardTtlMs: 15000 }(默认值)。
+#   token 永不进配置:只从宿主进程环境变量 GITHUB_TOKEN 读取(见 README「配置」)。
 - insert:
     - id: thorn-github-kanban
       name: '@local/thorn-github-kanban'
+      config:
+        repos: []
