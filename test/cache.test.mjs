@@ -407,6 +407,41 @@ test("R2host-P2 命中保真:getBoard 命中保留完整性口径字段(核对�
   assert.equal(second.board.fieldValuesTruncated, 1, "命中保留 board.fieldValuesTruncated");
 });
 
+// ── 0.9.0 写回(moveCard):读阶段走同键缓存,写阶段永不缓存/不去重 ─────────────
+
+const isMutation = (body) => String(body.query).trimStart().startsWith("mutation");
+const moveCardBehavior = (body) =>
+  isMutation(body) ? { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "i1" } } } } : boardPageWith("M");
+
+test("S3.3 moveCard 不缓存不去重:连续两次调用 mutation 真发两次;读阶段同键 TTL 内只读一次", async () => {
+  const { service, count: fetchCount } = makeCacheHarness({ behavior: moveCardBehavior });
+  const first = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  const second = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(fetchCount(), 3, "board 读 1 次(第二次同键 TTL 命中)+ mutation 各 1 次(写回从不缓存)");
+  assert.equal(service.cache.inflight.size, 0, "无残留 in-flight 条目");
+  assert.equal(service.cache.boards.size, 1, "写回不产生新缓存条目");
+});
+
+test("S3.3 moveCard 并发不合并:同时发起的两个写回各自真发 mutation(读阶段仍共享一次拉取)", async () => {
+  let mutationCount = 0;
+  const { service, count: fetchCount } = makeCacheHarness({
+    behavior: (body) => {
+      if (isMutation(body)) {
+        mutationCount += 1;
+        return { data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "i1" } } } };
+      }
+      return boardPageWith("M");
+    },
+  });
+  const [a, b] = await Promise.all([service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" }), service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o2" })]);
+  assert.equal(a.ok, true);
+  assert.equal(b.ok, true);
+  assert.equal(mutationCount, 2, "写操作必须各自真发,不进 in-flight 去重");
+  assert.equal(fetchCount(), 3, "并发读阶段按既有去重合并为 1 次 + 2 次 mutation");
+});
+
 // ── 第三轮整改(R3host):凭据快照 —— 盖章指纹与实际请求凭据同刻一致 ──────────
 
 /**

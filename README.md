@@ -1,12 +1,12 @@
 # dsh-github-kanban
 
-dsh Web UI 的 GitHub Projects v2 只读看板。在左栏 **Global panels → GitHub 看板** 打开，支持项目切换、按 Status 分列、标题/负责人/标签展示及 30 秒轮询。
+dsh Web UI 的 GitHub Projects v2 看板。在左栏 **Global panels → GitHub 看板** 打开，支持项目切换、按 Status 分列、标题/负责人/标签展示及 30 秒轮询。
 
-当前版本 **0.8.0 Alpha**，MIT 许可。零运行时依赖，无构建步骤。写回、拖拽、Agent 工具及多视图尚未实现。
+当前版本 **0.9.0 Alpha**，MIT 许可。零运行时依赖，无构建步骤。已支持拖拽卡片到其他列写回更新 Status（读 + 状态写回，Alpha）；列内排序、建卡删卡、其他字段编辑、触屏拖拽、Agent 工具及多视图尚未实现。
 
 ## 安装
 
-运行时要求 Node ≥18；历史验证环境为 Node 24、dsh 0.2.0-rc.1/rc.2。其他版本未验证，0.8.0 的完整真机验收仍见 [待办](TODO.md)。
+运行时要求 Node ≥18；历史验证环境为 Node 24、dsh 0.2.0-rc.1/rc.2。其他版本未验证，完整真机验收仍见 [待办](TODO.md)。
 
 1. 将仓库放在本地 `<repo>`。
 2. 在 dsh web profile 的 `package.json`（通常为 `~/.dsh/profiles/web/package.json`）中合并以下配置，保留原有依赖和 bundles：
@@ -35,6 +35,11 @@ dsh Web UI 的 GitHub Projects v2 只读看板。在左栏 **Global panels → G
 
 在启动 dsh 的环境中设置 `GITHUB_TOKEN`，然后重启 dsh web。使用能读取目标 Projects、Issues 和 Pull requests 的 token；fine-grained PAT 按目标资源授予只读权限。token 不放进插件配置、日志或浏览器，详见 [安全策略](SECURITY.md)。
 
+拖拽写回 Status 还需要**项目写权限**：
+
+- classic PAT 需勾选 `project` scope（对 user 和 organization 项目授予读写）；仓库关联项目还可能需要 `repo` scope。
+- fine-grained PAT 对项目（尤其 user 级项目）的写支持以 GitHub 当前实际行为为准；GitHub 文档目前注明 user 名下的 Projects 仅 classic token 可访问。若拖拽报 `forbidden`，先用 GitHub 网页确认该 token 能改同一张卡的 Status，再检查 scope 设置。
+
 默认读取 viewer 名下的项目。要加入关联到仓库的项目，修改 `cordis.patch.yml` 的宿主 insert 配置：
 
 ```yaml
@@ -57,9 +62,12 @@ dsh Web UI 的 GitHub Projects v2 只读看板。在左栏 **Global panels → G
 
 - 项目来源为 viewer 与配置仓库关联的项目，不会遍历组织全部项目。按项目 id 去重并优先保留仓库来源，过滤 closed 项目。
 - 列顺序取名为 `Status` 的单选字段；缺失时显示「全部」并提示原因。
+- 看板卡片可拖拽到其他列：先乐观更新，再写回更新该卡 Status；写回失败自动回滚到原列并显示内联错误。「全部」列（项目无 Status 字段）不可拖。
+- 写操作仅限移动卡片更新 Status：不支持列内排序、新建/删除卡片、编辑其他字段，也不支持触屏拖拽（HTML5 拖放的浏览器限制）。
+- 面板工具栏提供浅色/暗色主题切换，默认跟随 dsh 宿主主题，检测失败时回退浏览器 `prefers-color-scheme`。
 - 页面后台暂停轮询；请求在途时不叠发轮询。「刷新」重拉项目列表和看板并绕过 TTL，在看板请求期间暂时禁用。
 - 单来源失败显示警告，保留其他来源；全部来源失败显示错误。瞬态失败会重试，达到上限后可手动刷新。
-- 浏览器只持久化项目选择偏好（30 天有效）；不持久化项目列表或卡片。宿主缓存留在进程内存中。
+- 浏览器只持久化 UI 偏好：项目选择与主题选择（`prefs/v1`，30 天有效）；不持久化项目列表或卡片。宿主缓存留在进程内存中。
 
 | 数据 | 读取上限 |
 | --- | --- |
@@ -79,6 +87,12 @@ dsh Web UI 的 GitHub Projects v2 只读看板。在左栏 **Global panels → G
 | 卡片无标题或内容不可读 | 检查 Issues / Pull requests 读权限 |
 | `project_not_found` | 刷新列表，检查项目是否存在及是否仍有权限 |
 | 单仓项目缺席 | 检查仓库格式、关联关系和权限，查看来源警告 |
+| 拖拽写回 `forbidden` | token 无项目写权限，非瞬态；检查 PAT scope（见[配置](#配置)），先用 GitHub 网页确认能否改同一张卡的 Status |
+| 写回 `not_supported` | 项目无 Status 字段，看板为「全部」列，不提供拖拽写回 |
+| 写回 `option_missing` / `item_missing` | Status 选项或卡片已在 GitHub 上不存在；刷新看板后重试 |
+| 写回 `write_failed` | GitHub 拒绝了写入，按错误消息处理 |
+| 写回 `bad_request` | 请求被 GitHub 拒绝；刷新看板重试，持续出现再上报 |
+| 拖拽写回 `timeout` | 瞬态失败，卡片已回滚；重试拖拽或手动刷新 |
 | `timeout` / `remote_timeout` / `Failed to fetch` | 检查网络及 dsh 状态；等待自动重试或手动刷新 |
 | 数据不完整 | 查看加载数量和截断提示，对照上表 |
 | 升级 dsh 后打不开 | 查看控制台契约错误，按 [升级核对清单](notes/dev-notes.md#升级核对清单) 检查适配层 |

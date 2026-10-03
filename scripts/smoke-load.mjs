@@ -265,6 +265,8 @@ const scopedInjectCalls = [];
 /** scoped fiber 捕获的远程面替身:按网关真实契约回信封 {ok:true, value:<业务结果>}(rc.2 实测)。 */
 const remoteFaceStub = {
   status: async () => ({ ok: true, value: { ok: true, status: { tokenConfigured: false } } }),
+  // moveCard(0.9.0 拖拽写回):成功 { ok: true }(刻意无 value 键,不进信封拆包)
+  moveCard: async () => ({ ok: true, value: { ok: true } }),
 };
 /** 面替身参数数量闸(R2/P1 防漂移):与真网关客户端同严。dsh-api-gateway/lib/client.js
  *  的 prepareInvocation 把「清单形参数量」与实参数量做精确相等比对,数量不符直接抛
@@ -401,9 +403,9 @@ check("apply 向 ctx.remote.$mount 恰好挂 1 份清单", mountedContributions.
 check("清单归属本包", contribution?.package === PACKAGE_ID);
 const descriptors = Array.isArray(contribution?.descriptors) ? contribution.descriptors : [];
 check(
-  "远程清单声明 3 个 direct 方法(status/listProjects/getBoard)",
-  descriptors.length === 3 && descriptors.every((d) => d.namespace === SERVICE_KEY && d.invocation?.kind === "direct") &&
-    ["status", "listProjects", "getBoard"].every((m) => descriptors.some((d) => d.method === m)),
+  "远程清单声明 4 个 direct 方法(status/listProjects/getBoard/moveCard,0.9.0 写回上清单)",
+  descriptors.length === 4 && descriptors.every((d) => d.namespace === SERVICE_KEY && d.invocation?.kind === "direct") &&
+    ["status", "listProjects", "getBoard", "moveCard"].every((m) => descriptors.some((d) => d.method === m)),
   descriptors.map((d) => `${d.namespace}/${d.method}`).join(","),
 );
 check(
@@ -431,6 +433,29 @@ check("strict 编解码占位的 create() 是无害透传", descriptors[0]?.resu
     passed = false;
   }
   check("面替身参数数量闸:恰好 1 实参的调用正常放行", passed === true);
+  // moveCard(0.9.0)同闸:恰好 1 实参(写回 request)放行,0 实参必抛
+  let moveThrew = false;
+  try {
+    withArgContract({ moveCard: () => ({ ok: true, value: { ok: true } }) }).moveCard();
+  } catch {
+    moveThrew = true;
+  }
+  check("面替身参数数量闸:moveCard 0 实参必抛(写回 request 恒 1 实参)", moveThrew === true);
+  let movePassed = false;
+  try {
+    movePassed = withArgContract({ moveCard: (request) => ({ ok: true, value: { ok: true }, request }) }).moveCard({ projectNumber: 7, itemId: "i1", optionId: "o2" }).ok === true;
+  } catch {
+    movePassed = false;
+  }
+  check("面替身参数数量闸:moveCard 恰好 1 实参(写回请求)放行", movePassed === true);
+  {
+    const wired = await mainInjectProps?.board?.moveCard?.({ projectNumber: 1, itemId: "i1", optionId: "o1" });
+    check(
+      "boardApi.moveCard(request) 经 scoped fiber 捕获的远程面返回写回结果(恰好 1 实参过闸)",
+      wired?.ok === true,
+      JSON.stringify(wired),
+    );
+  }
 }
 
 // ── 4. 宿主半边:服务、绑定、token 红线、GraphQL 纯度 ────────────────────────
@@ -1005,12 +1030,17 @@ check("宿主激活日志不含任何 token 值(只报配置与否)", hostLogs.l
     JSON.stringify({ serviceKey: service.typertRemote?.serviceKey, namespace: service.typertRemote?.namespace }),
   );
   // 3) 方法签名:简单标识符参数(gateway 用 Function.toString 解析参数名 → wire 字段名)
-  const wireParamsOk = ["status", "listProjects", "getBoard"].every((method) => {
+  const wireParamsOk = ["status", "listProjects", "getBoard", "moveCard"].every((method) => {
     const source = Object.getPrototypeOf(service)[method].toString();
     const body = source.slice(source.indexOf("(") + 1, source.indexOf(")")).trim();
     return body === "" ? method === "status" : body === "request";
   });
-  check("wire 契约(S2.6):三个 Remote 方法都是简单标识符参数(wire 字段名 = 参数名)", wireParamsOk, "status→无参,listProjects/getBoard→request");
+  check("wire 契约(S2.6):四个 Remote 方法都是简单标识符参数(wire 字段名 = 参数名;0.9.0 起 moveCard 同型)", wireParamsOk, "status→无参,listProjects/getBoard/moveCard→request");
+  check(
+    "wire 契约(S2.6):宿主 moveCard 标记在册(0.9.0 写回;宿主半边由并行线程交付)",
+    remoteMarkers.methods.some((marker) => marker.method === "moveCard"),
+    JSON.stringify(remoteMarkers.methods.map((marker) => marker.method)),
+  );
   // 4) 浏览器侧清单:对照 dsh-typert-registry 客户端 validateInvocation 的规则镜像
   const descriptorRulesOk = descriptors.every((descriptor) =>
     typeof descriptor.id === "string" && descriptor.id.length > 0 && // id 只要求非空(客户端 registry)
@@ -1522,7 +1552,17 @@ const sampleBoard = {
   const emptyMark = columns[2] !== undefined && textOf(columns[2]).includes("空");
   check("看板:空列(Done)也显示并标注「空」", emptyMark === true, textOf(columns[2] ?? "").trim());
   const cardText = textOf(columns[1]);
-  check("看板:卡片含标题 + 负责人(@login)+ 标签(P1)", cardText.includes("设计 brief 评审") && cardText.includes("@octocat") && cardText.includes("P1"), cardText.replace(/\s+/g, " "));
+  check("看板:卡片含标题 + 标签(P1)", cardText.includes("设计 brief 评审") && cardText.includes("P1"), cardText.replace(/\s+/g, " "));
+  // 0.9.0:负责人渲染为头像(assigneeDetails 在场 → img[alt=login];缺席 → 首字母圆点)
+  {
+    const detailBoard = { ...sampleBoard, columns: [{ ...sampleBoard.columns[1], items: [{ ...sampleBoard.columns[1].items[0], assigneeDetails: [{ login: "octocat", avatarUrl: "https://example.com/octocat.png" }] }] }] };
+    const detailApi = { ...boardApi, getBoard: async () => ({ ok: true, board: detailBoard }) };
+    const detailTree = await settleFresh(bodySeat.component, makeProps(stateB, detailApi));
+    const avatarImg = findAll(detailTree, (node) => node.type === "img" && node.props?.className === "tgk-avatar")[0];
+    check("看板(0.9.0):assigneeDetails 在场 → 20px 圆形头像 img(alt=login,loading lazy)", avatarImg !== undefined && avatarImg.props.alt === "octocat" && avatarImg.props.loading === "lazy" && avatarImg.props.src === "https://example.com/octocat.png", JSON.stringify(avatarImg?.props ?? null));
+    const stringAssignee = findAll(tree, (node) => typeof node.props?.className === "string" && node.props.className.includes("tgk-avatarFallback"))[0];
+    check("看板(0.9.0):assignees 仅 string(旧宿主形状)→ 首字母圆点退化(title=login)", stringAssignee !== undefined && stringAssignee.props.title === "octocat" && textOf(stringAssignee) === "O", JSON.stringify(stringAssignee?.props ?? null));
+  }
   check("看板:初拉默认项目 #7", getCalls.length === 1 && getCalls[0]?.projectNumber === 7, JSON.stringify(getCalls));
 
   if (select === undefined) {
@@ -1605,7 +1645,7 @@ const sampleBoard = {
   localStorageStub.__store[PREFS_KEY] = JSON.stringify({ savedAt: Date.now(), selectedKey: "#9" });
   const getCalls = [];
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 3, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 3, version: "0.9.0" } }),
     listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }, { id: "p9", number: 9, title: "Beta" }] }),
     getBoard: async (request) => {
       getCalls.push(request);
@@ -1620,8 +1660,8 @@ const sampleBoard = {
     check("隐私:旧快照的卡片/列名不上屏(无本地业务数据可恢复)", !text.includes("旧身份的卡") && !text.includes("SnapColumn") && text.includes("FreshColumn"), text.match(/(Fresh|Snap)Column/)?.[0] ?? "");
     const stored = JSON.parse(localStorageStub.__store[PREFS_KEY] ?? "{}");
     check(
-      "偏好:写回仅含 { savedAt, selectedKey },不含项目列表/看板/计数",
-      Object.keys(stored).sort().join(",") === "savedAt,selectedKey" && stored.selectedKey === "#9",
+      "偏好:写回仅含 { savedAt, selectedKey, theme }(0.9.0 起带 UI 主题偏好),不含项目列表/看板/计数",
+      Object.keys(stored).sort().join(",") === "savedAt,selectedKey,theme" && stored.selectedKey === "#9",
       `keys=${Object.keys(stored).join(",")}`,
     );
   } finally {
@@ -1636,7 +1676,7 @@ const sampleBoard = {
   localStorageStub.__store[PREFS_KEY] = JSON.stringify({ savedAt: 1, selectedKey: "#9" }); // 1970 年存的,早已过期
   const getCalls = [];
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 0, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 0, version: "0.9.0" } }),
     listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }, { id: "p9", number: 9, title: "Beta" }] }),
     getBoard: async (request) => {
       getCalls.push(request);
@@ -1659,7 +1699,7 @@ const sampleBoard = {
     status: async () => {
       statusCalls += 1;
       if (statusCalls <= 2) return { ok: false, error: { code: "gateway/internal", message: "client api: githubKanban/status failed: Failed to fetch" } };
-      return { ok: true, status: { tokenConfigured: true, repos: 3, version: "0.8.0" } };
+      return { ok: true, status: { tokenConfigured: true, repos: 3, version: "0.9.0" } };
     },
     listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
     getBoard: async () => ({ ok: true, board: sampleBoard, totalCount: 2 }),
@@ -1695,7 +1735,7 @@ const sampleBoard = {
   const boardApi = {
     status: async () => {
       statusCalls += 1;
-      return { ok: true, status: { tokenConfigured: true, repos: 3, version: "0.8.0" } };
+      return { ok: true, status: { tokenConfigured: true, repos: 3, version: "0.9.0" } };
     },
     listProjects: async () => ({ ok: false, error: { code: "gateway/internal", message: "client api: githubKanban/listProjects failed: Failed to fetch" } }),
     getBoard: async () => ({ ok: true, board: sampleBoard }),
@@ -1908,7 +1948,7 @@ const makePolling = (isVisible = () => true) => {
 {
   const listCalls = [];
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
     listProjects: async (request) => {
       listCalls.push(request);
       if (listCalls.length === 1) return { ok: false, error: { code: "http_error", message: "GitHub API HTTP 503。" } };
@@ -1919,11 +1959,11 @@ const makePolling = (isVisible = () => true) => {
   miniReact.reset();
   let tree = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi), 12);
   let text = textOf(tree);
-  const buttons = findAll(tree, (node) => node.type === "button");
+  const buttons = findAll(tree, (node) => node.type === "button" && String(node.props?.className ?? "").includes("tgk-reload"));
   check(
-    "首载失败(R05):列表 503 时错误态在场且有可操作的刷新按钮(非瞬态不自动重试)",
+    "首载失败(R05):列表 503 时错误态在场且有可操作的刷新按钮(非瞬态不自动重试;主题切换按钮不计入恢复入口)",
     text.includes("读取失败") && text.includes("[http_error]") && buttons.length === 1 && buttons[0].props.disabled !== true && listCalls.length === 1,
-    `buttons=${buttons.length} listCalls=${listCalls.length}`,
+    `reloadButtons=${buttons.length} listCalls=${listCalls.length}`,
   );
   // 防御式交互:旧实现(无恢复按钮)在这里应表现为上方用例失败,而不是脚本崩溃
   if (buttons[0] !== undefined) buttons[0].props.onClick();
@@ -1940,7 +1980,7 @@ const makePolling = (isVisible = () => true) => {
 {
   let mode = "empty";
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
     listProjects: async () => (mode === "empty" ? { ok: true, projects: [] } : { ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
     getBoard: async () => ({ ok: true, board: sampleBoard }),
   };
@@ -1960,7 +2000,7 @@ const makePolling = (isVisible = () => true) => {
 // 渲染会把失败藏进空态文案,用户无从知道有来源读失败(与 5k 的非空列表路径对照)。
 {
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
     listProjects: async () => ({
       ok: true,
       projects: [],
@@ -1984,7 +2024,7 @@ const makePolling = (isVisible = () => true) => {
 // 5k. 来源级警告展示(S1.4):局部失败时列表照常,警告行点名失败来源
 {
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
     listProjects: async () => ({
       ok: true,
       projects: [{ id: "p1", number: 7, title: "Alpha" }],
@@ -2011,7 +2051,7 @@ const makePolling = (isVisible = () => true) => {
   let calls = 0;
   let mode = "timeout-after-first"; // 第 2 次起持续超时,测试显式切回恢复
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
     listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
     getBoard: async () => {
       calls += 1;
@@ -2042,7 +2082,7 @@ const makePolling = (isVisible = () => true) => {
   };
   const gate = { pending: null }; // 非 null 时 #9 的回包被拦住
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
     listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }, { id: "p2", number: 9, title: "Beta" }] }),
     getBoard: async ({ projectNumber }) => {
       if (projectNumber === 9 && gate.pending !== null) await gate.pending.promise;
@@ -2072,7 +2112,7 @@ const makePolling = (isVisible = () => true) => {
 {
   const gate = { pending: null };
   const boardApi = {
-    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.8.0" } }),
+    status: async () => ({ ok: true, status: { tokenConfigured: true, version: "0.9.0" } }),
     listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
     getBoard: async () => {
       if (gate.pending !== null) await gate.pending.promise; // 挂起指定次数的回包
@@ -2112,7 +2152,7 @@ const makePolling = (isVisible = () => true) => {
   const boardApi = {
     status: async () => {
       statusCalls += 1;
-      return { ok: true, status: { tokenConfigured: true, version: "0.8.0" } };
+      return { ok: true, status: { tokenConfigured: true, version: "0.9.0" } };
     },
     listProjects: async () => {
       listCalls += 1;
@@ -2790,6 +2830,90 @@ const makePolling = (isVisible = () => true) => {
   }
   // 4) 版本来源统一(S2.9):代码常量与 package.json 一致
   check("版本(S2.9):lib/index.js VERSION 与 package.json version 一致", hostMod.VERSION === pkg.version, `lib=${hostMod.VERSION} pkg=${pkg.version}`);
+}
+
+// ── 5u. 0.9.0:alpha 徽章/写回说明、主题切换、载荷透传、moveCard 自检接缝 ──────
+{
+  // 1) 面板头:phaseBadge=「alpha」,说明句交代拖拽写回与边界(保留来源句)
+  const boardApi = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 0, version: "0.9.0" } }),
+    listProjects: async () => ({ ok: true, projects: [] }),
+    getBoard: async () => ({ ok: true, board: sampleBoard }),
+  };
+  const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
+  const text = textOf(tree);
+  check("0.9.0 面板头:徽章 alpha(替代只读),说明句含写回指引与边界、保留数据来源句", text.includes("alpha") && text.includes("拖拽卡片到其他列会更新 GitHub 上的 Status") && text.includes("不支持列内排序、建卡与删卡") && text.includes("数据来自 GitHub Projects v2"), text.slice(0, 120));
+  // 2) 主题切换按钮:smoke 沙箱无 matchMedia/宿主线索 → 初始暗色;点击翻转并落盘 theme
+  const miniTree0 = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
+  const root0 = findFirst(miniTree0, (node) => node.type === "section" && typeof node.props?.className === "string" && node.props.className.includes("tgk-root"));
+  const toggle0 = findFirst(miniTree0, (node) => node.type === "button" && typeof node.props?.className === "string" && node.props.className.includes("tgk-themeToggle"));
+  check("0.9.0 主题:根节点带 data-tgk-theme(沙箱默认暗色),工具栏带切换按钮(svg+aria-label)", root0?.props?.["data-tgk-theme"] === "dark" && toggle0 !== undefined && toggle0.props["aria-label"] === "切换到浅色模式" && typeof toggle0.props.onClick === "function", `theme=${root0?.props?.["data-tgk-theme"]}`);
+  toggle0.props.onClick(); // → THEME_SET(light) → syncPrefs 持久化
+  const miniTree1 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  const root1 = findFirst(miniTree1, (node) => node.type === "section" && typeof node.props?.className === "string" && node.props.className.includes("tgk-root"));
+  const toggle1 = findFirst(miniTree1, (node) => node.type === "button" && typeof node.props?.className === "string" && node.props.className.includes("tgk-themeToggle"));
+  check("0.9.0 主题:点击后 data-tgk-theme 翻转为 light,aria-label 反向(指向浅色)", root1?.props?.["data-tgk-theme"] === "light" && toggle1?.props["aria-label"] === "切换到暗色模式", `theme=${root1?.props?.["data-tgk-theme"]}`);
+  // 3) 主题持久化:UI 偏好进 prefs(业务数据仍零落盘)
+  {
+    localStorageStub.__store = {};
+    const PREFS_KEY = `${PACKAGE_ID}/prefs/v1`;
+    const themeApi = {
+      status: async () => ({ ok: true, status: { tokenConfigured: true, repos: 0, version: "0.9.0" } }),
+      listProjects: async () => ({ ok: true, projects: [] }), // 空列表:选中键缺席也要能落盘主题
+      getBoard: async () => ({ ok: true, board: sampleBoard }),
+    };
+    try {
+      const themeTree = await settleFresh(bodySeat.component, makeProps(stateB, themeApi));
+      const themeToggle = findFirst(themeTree, (node) => node.type === "button" && typeof node.props?.className === "string" && node.props.className.includes("tgk-themeToggle"));
+      themeToggle.props.onClick();
+      await miniReact.settle(bodySeat.component, makeProps(stateB, themeApi));
+      const stored = JSON.parse(localStorageStub.__store[PREFS_KEY] ?? "{}");
+      check(
+        "0.9.0 主题持久化:空项目列表下切换主题也落盘 { savedAt, theme }(selectedKey 缺席不落盘,失配不落盘规则不变)",
+        stored.theme === "light" && stored.selectedKey === undefined && typeof stored.savedAt === "number",
+        `keys=${Object.keys(stored).sort().join(",")} theme=${stored.theme}`,
+      );
+    } finally {
+      localStorageStub.__store = null;
+    }
+  }
+  // 4) 自检接缝:0.9.0 纯函数(主题/乐观移动/可拖性)与载荷透传校验
+  {
+    const internals = mod.internals;
+    const themeFns = ["normalizeTheme", "resolveInitialTheme", "detectDefaultTheme", "themeEnvironment", "statusColorHex", "labelPillStyle"];
+    const moveFns = ["moveCardInBoard", "dragDisabledReason"];
+    check(
+      "0.9.0 internals:主题与拖拽写回纯函数经自检接缝暴露(不经 React 可直驱)",
+      themeFns.every((name) => typeof internals[name] === "function") && moveFns.every((name) => typeof internals[name] === "function"),
+      themeFns.concat(moveFns).filter((name) => typeof internals[name] !== "function").join(",") || "all present",
+    );
+    const board = { project: { number: 7 }, hasStatusField: true, columns: [
+      { optionId: "o1", name: "Todo", items: [{ id: "a1", title: "卡", assignees: [], labels: [] }] },
+      { optionId: "o2", name: "Done", items: [] },
+    ] };
+    const moved = internals.moveCardInBoard(board, "a1", "o2");
+    check(
+      "0.9.0 moveCardInBoard:乐观移动(目标列末尾),原看板不改写(快照回滚依据)",
+      moved.columns[1].items[0]?.id === "a1" && moved.columns[0].items.length === 0 && board.columns[0].items[0]?.id === "a1",
+      JSON.stringify(moved.columns.map((column) => column.items.map((item) => item.id))),
+    );
+    check(
+      "0.9.0 dragDisabledReason:正常列可拖,fallback 列给词典键(兜底列 title 提示)",
+      internals.dragDisabledReason(board, board.columns[0], null) === null && internals.dragDisabledReason(board, { optionId: null, fallback: "unfiled", items: [] }, null) === "dragHintFallback",
+      "",
+    );
+    check(
+      "0.9.0 statusColorHex/labelPillStyle:枚举色两套 hex + 非法值退化",
+      internals.statusColorHex("BLUE", "light") === "#0969da" && internals.statusColorHex("UNKNOWN", "dark") === "#8b949e" && internals.labelPillStyle("ff8800", "light")?.backgroundColor === "rgba(255, 136, 0, 0.2)" && internals.labelPillStyle("nope", "light") === undefined,
+      "",
+    );
+    check(
+      "0.9.0 coerceBoard:载荷扩展(projectNodeId/列 color)在场须字符串、缺席放行",
+      internals.coerceBoardResult({ ok: true, board: { projectNodeId: "PV", statusFieldId: "SF", columns: [{ optionId: "o1", color: "BLUE", name: "Todo", items: [] }] } }).ok === true &&
+        internals.coerceBoardResult({ ok: true, board: { columns: [{ color: 42, items: [] }] } }).error?.code === "shape_error",
+      "",
+    );
+  }
 }
 
 // panellist 入口图标:svg 字形(朴素、aria-hidden、不吃文字内容),label 由注册项自己提供。

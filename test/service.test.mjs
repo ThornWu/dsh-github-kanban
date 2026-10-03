@@ -268,6 +268,260 @@ test("S3.2 自诊断:content null 计数进 board.contentMissing;字段值截断
   assert.equal(result.board.fieldValuesTruncated, 1);
 });
 
+// ── 0.9.0 载荷扩展(拖拽写回与 GitHub 风格渲染供数;只增不改) ─────────────────
+
+test("S3.2 载荷扩展:projectNodeId/statusFieldId/列 color/optionId 入投影(fallback 列二者 null)", async () => {
+  const { service } = makeService(() =>
+    viewerBoardPage({
+      number: 7,
+      statusOptions: [
+        { id: "o1", name: "Todo", color: "GRAY" },
+        { id: "o2", name: "Done" }, // 选项缺 color → 投影 null(形状稳定:color 恒在场)
+      ],
+      totalCount: 1,
+      items: [
+        boardItemNode({ id: "i-unknown", title: "未知列卡", optionId: "o-unknown" }), // 落 unfiled 兜底列
+      ],
+    }),
+  );
+  const result = await service.getBoard({ projectNumber: 7 });
+  assert.equal(result.ok, true);
+  assert.equal(result.board.projectNodeId, "pv-7", "项目全局 node id(写回 mutation 的 projectId 来源)");
+  assert.equal(result.board.statusFieldId, "f_status", "Status 字段全局 id(写回 mutation 的 fieldId 来源)");
+  const [todo, done, unfiled] = result.board.columns;
+  assert.equal(todo.optionId, "o1");
+  assert.equal(todo.color, "GRAY", "列 color 来自 ProjectV2FieldOptionColor 枚举(如 GREEN/RED)");
+  assert.equal(done.optionId, "o2");
+  assert.equal(done.color, null, "选项缺 color → null,键恒在场(客户端透传依赖形状稳定)");
+  assert.equal(unfiled.optionId, null, "fallback 列 optionId=null(既有口径)");
+  assert.equal(unfiled.color, null, "fallback 列 color=null");
+});
+
+test("S3.2 载荷扩展:无 Status 字段 → statusFieldId=null,单列兜底 optionId/color 均 null", async () => {
+  const { service } = makeService(() => viewerBoardPage({ number: 7, statusOptions: null, totalCount: 0 }));
+  const result = await service.getBoard({ projectNumber: 7 });
+  assert.equal(result.ok, true);
+  assert.equal(result.board.hasStatusField, false);
+  assert.equal(result.board.statusFieldId, null);
+  assert.equal(result.board.projectNodeId, "pv-7");
+  assert.equal(result.board.columns[0].fallback, "all");
+  assert.equal(result.board.columns[0].optionId, null);
+  assert.equal(result.board.columns[0].color, null);
+});
+
+test("S3.2 载荷扩展:卡片 assignees 保持 login 字符串数组,新增 assigneeDetails 带 avatarUrl;labels color 透传", async () => {
+  const { service } = makeService(() =>
+    viewerBoardPage({
+      number: 7,
+      totalCount: 1,
+      items: [
+        {
+          id: "i1",
+          content: { title: "样式卡" },
+          fieldValues: {
+            nodes: [
+              { __typename: "ProjectV2ItemFieldSingleSelectValue", optionId: "o1", field: { name: "Status" } },
+              {
+                __typename: "ProjectV2ItemFieldUserValue",
+                field: { name: "Assignees" },
+                users: { nodes: [{ login: "octocat", avatarUrl: "https://avatars.example/u/octocat?size=40" }, { login: "nobody" }] },
+              },
+              { __typename: "ProjectV2ItemFieldLabelValue", field: { name: "Labels" }, labels: { nodes: [{ name: "P1", color: "ff8800" }] } },
+            ],
+          },
+        },
+      ],
+    }),
+  );
+  const result = await service.getBoard({ projectNumber: 7 });
+  const cardItem = result.board.columns[0].items[0];
+  assert.deepEqual(cardItem.assignees, ["octocat", "nobody"], "既有 assignees(login 数组)不动");
+  assert.deepEqual(
+    cardItem.assigneeDetails,
+    [
+      { login: "octocat", avatarUrl: "https://avatars.example/u/octocat?size=40" },
+      { login: "nobody", avatarUrl: null },
+    ],
+    "新增 assigneeDetails:与 assignees 同序,avatarUrl 缺失补 null(形状稳定)",
+  );
+  assert.deepEqual(cardItem.labels, [{ name: "P1", color: "ff8800" }], "labels color(不带 # 的 6 位 hex)随节点透传");
+});
+
+test("S3.2 载荷扩展查询契约:看板查询带 options color 与 avatarUrl(size: 40),两入口一致", () => {
+  const q = host.graphqlQueries;
+  for (const key of ["boardPage", "repoBoardPage"]) {
+    assert.ok(q[key].includes("options { id name color }"), `${key}:Status 选项带 color(ProjectV2FieldOptionColor 枚举)`);
+    assert.ok(q[key].includes("avatarUrl(size: 40)"), `${key}:assignees 节点带 40px 头像`);
+    assert.ok(q[key].includes("fieldValues(first: 30)"), `${key}:fieldValues 在 item 级查询(与 content 三路片段正交,一处补齐即 issues/PRs/drafts 三路同享)`);
+  }
+});
+
+// ── 0.9.0 写回 mutation moveCard(读 + 状态写回;先读后写,写不缓存不去重) ──────
+
+const isMutation = (body) => String(body.query).trimStart().startsWith("mutation");
+/** moveCard 替身的成功 mutation 响应(与 MUTATION_MOVE_CARD 选择集同形)。 */
+const mutationOk = () => ({ data: { updateProjectV2ItemFieldValue: { projectV2Item: { id: "i1" } } } });
+/** moveCard 读阶段的看板页(带 Status 字段)。 */
+const moveCardBoardPage = () => viewerBoardPage({ number: 7, statusOptions: [{ id: "o1", name: "Todo", color: "GRAY" }], totalCount: 0 });
+
+test("S3.2 moveCard 成功:mutation 文档 + 变量五元组 + Authorization 用入口快照凭据,返回 {ok:true}", async () => {
+  const { service, calls } = makeService((body) => (isMutation(body) ? mutationOk() : moveCardBoardPage()));
+  const result = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  assert.deepEqual(result, { ok: true });
+  assert.ok(!("value" in result), "成功信封无 value 键(网关拆包 raw.ok===true && \"value\" in raw ? raw.value : raw 原样透传)");
+  assert.equal(calls.length, 2, "先读(同键缓存解析 projectNodeId/statusFieldId)后写");
+  const doc = String(calls[1].body.query);
+  assert.ok(doc.includes("updateProjectV2ItemFieldValue(input: $input)"), "写回走 updateProjectV2ItemFieldValue");
+  assert.ok(doc.includes("UpdateProjectV2ItemFieldValueInput!"), "input 变量类型");
+  assert.ok(doc.includes("projectV2Item { id }"), "选择集");
+  assert.deepEqual(
+    calls[1].body.variables,
+    { input: { projectId: "pv-7", itemId: "i1", fieldId: "f_status", value: { singleSelectOptionId: "o1" } } },
+    "变量五元组:projectId/itemId/fieldId/value.singleSelectOptionId,全部与看板载荷同源",
+  );
+  assert.equal(calls[1].init.headers.Authorization, `Bearer ${ENV.GITHUB_TOKEN}`, "Authorization 用凭据快照(R3host/P1 同刻语义)");
+});
+
+test("S3.2 moveCard 凭据同刻:在途窗口内轮换 token,mutation 仍按入口快照凭据发出", async () => {
+  const tokenA = "r3-move-token-A";
+  const tokenB = "r3-move-token-B";
+  const env = { GITHUB_TOKEN: tokenA };
+  const seenAuth = [];
+  const service = new host.GithubKanbanService({
+    env,
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (isMutation(body)) {
+        seenAuth.push(init.headers.Authorization);
+        return { ok: true, status: 200, json: async () => mutationOk() };
+      }
+      env.GITHUB_TOKEN = tokenB; // 读链路在途窗口内轮换身份(与 R3host-P1 同窗口)
+      return { ok: true, status: 200, json: async () => viewerBoardPage({ number: 7, totalCount: 0 }) };
+    },
+  });
+  const result = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(seenAuth, [`Bearer ${tokenA}`], "mutation 按方法入口捕获的快照凭据发出(若执行时读 env 会拿到轮换后的 B)");
+  assert.ok(!JSON.stringify(result).includes(tokenB));
+});
+
+test("S3.2 moveCard 错误映射:HTTP 403 → forbidden(transient:false),消息脱敏不含 token", async () => {
+  const secret = "ghp_move_forbidden_secret";
+  const service = new host.GithubKanbanService({
+    env: { GITHUB_TOKEN: secret },
+    fetchImpl: fetchResponding(async (body) => (isMutation(body) ? { status: 403 } : moveCardBoardPage())),
+  });
+  const result = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "forbidden");
+  assert.equal(result.error.transient, false, "无写权限是非瞬态(README 排障表:检查 PAT scope)");
+  assert.ok(result.error.message.includes("403"));
+  assert.ok(!JSON.stringify(result).includes(secret), "错误消息脱敏不含凭据");
+});
+
+test("S3.2 moveCard 错误映射:GraphQL FORBIDDEN 文本同样 → forbidden(transient:false)", async () => {
+  const { service } = makeService((body) =>
+    isMutation(body) ? { errors: [{ message: "FORBIDDEN: Resource not accessible by integration" }] } : moveCardBoardPage(),
+  );
+  const result = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  assert.equal(result.error.code, "forbidden");
+  assert.equal(result.error.transient, false);
+});
+
+test("S3.2 moveCard 错误映射:422/无法校验按 GraphQL 文本判别 option_missing/item_missing,判不准统一 write_failed(均非瞬态)", async () => {
+  const cases = [
+    { response: { errors: [{ message: "Could not find the specified option on the field" }] }, code: "option_missing" },
+    { response: { errors: [{ message: "Project item could not be found" }] }, code: "item_missing" },
+    { response: { errors: [{ message: "validation exploded inexplicably" }] }, code: "write_failed" },
+    { response: { status: 422 }, code: "write_failed", note: "HTTP 422 无 errors 文本可判 → write_failed" },
+  ];
+  for (const { response, code, note } of cases) {
+    const { service } = makeService((body) => (isMutation(body) ? response : moveCardBoardPage()));
+    const result = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+    assert.equal(result.ok, false, note ?? JSON.stringify(response));
+    assert.equal(result.error.code, code, note ?? JSON.stringify(response));
+    assert.equal(result.error.transient, false, "写回失败均非瞬态,恢复靠重拖/刷新");
+  }
+});
+
+test("S3.2 moveCard:not_supported —— 项目无 Status 字段(statusFieldId=null),不发 mutation", async () => {
+  const { service, calls } = makeService(() => viewerBoardPage({ number: 7, statusOptions: null, totalCount: 0 }));
+  const result = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "not_supported");
+  assert.equal(result.error.transient, false);
+  assert.equal(calls.length, 1, "只读一次看板,mutation 不发");
+});
+
+test("S3.2 moveCard:形状非法 → bad_request(非瞬态),零网络请求", async () => {
+  const { service, calls } = makeService(() => moveCardBoardPage());
+  const badRequests = [
+    undefined,
+    { itemId: "i1", optionId: "o1" }, // 缺 projectNumber
+    { projectNumber: 0, itemId: "i1", optionId: "o1" }, // 非正整数
+    { projectNumber: 1.5, itemId: "i1", optionId: "o1" },
+    { projectNumber: 7, optionId: "o1" }, // 缺 itemId
+    { projectNumber: 7, itemId: "", optionId: "o1" }, // 空串
+    { projectNumber: 7, itemId: 42, optionId: "o1" }, // 类型不对
+    { projectNumber: 7, itemId: "i1" }, // 缺 optionId
+    { projectNumber: 7, itemId: "i1", optionId: 42 },
+    { projectNumber: 7, itemId: "i1", optionId: "o1", repo: "no-slash" }, // repo 格式
+  ];
+  for (const request of badRequests) {
+    const result = await service.moveCard(request);
+    assert.equal(result.ok, false, JSON.stringify(request));
+    assert.equal(result.error.code, "bad_request", JSON.stringify(request));
+    assert.equal(result.error.transient, false, JSON.stringify(request));
+  }
+  assert.equal(calls.length, 0, "形状校验在前,零网络请求");
+});
+
+test("S3.2 moveCard:mutation 超时 → timeout(transient:true)", async () => {
+  const service = new host.GithubKanbanService({
+    env: ENV,
+    requestTimeoutMs: 25,
+    fetchImpl: async (_url, init) => {
+      const body = JSON.parse(init.body);
+      if (isMutation(body)) return new Promise(() => {}); // 写回悬挂:期限内放弃
+      return { ok: true, status: 200, json: async () => moveCardBoardPage() };
+    },
+  });
+  const result = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "timeout");
+  assert.equal(result.error.transient, true, "超时瞬态:卡片已回滚,重拖或刷新");
+});
+
+test("S3.2 moveCard:token 缺失 → token_missing,不打网络", async () => {
+  const { service, calls } = makeService(() => moveCardBoardPage(), { env: {} });
+  const result = await service.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o1" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "token_missing");
+  assert.equal(calls.length, 0);
+});
+
+test("S3.2 moveCard:读链路失败原样透传(project_not_found),不发明新码、不加 transient", async () => {
+  const { service } = makeService(() => ({ data: { viewer: { projectV2: null } } }));
+  const result = await service.moveCard({ projectNumber: 404, itemId: "i1", optionId: "o1" });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.code, "project_not_found");
+  assert.equal(result.error.transient, undefined);
+});
+
+test("S3.2 moveCard wire 契约:原型标记含 moveCard(direct),方法签名恰为 1 个简单标识符参数 request", () => {
+  const service = new host.GithubKanbanService({ env: ENV });
+  const marker = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(service), "@deepseek-ai/dsh-typert-protocol/remote-methods")?.value;
+  assert.equal(marker.version, 1);
+  assert.deepEqual(
+    marker.methods.find((entry) => entry.method === "moveCard"),
+    { method: "moveCard", invocation: { kind: "direct" } },
+    "与 protocol mark() 产出逐字段一致(键序/冻结,见 §5 契约 1)",
+  );
+  const source = Object.getPrototypeOf(service).moveCard.toString();
+  const params = source.slice(source.indexOf("(") + 1, source.indexOf(")")).trim();
+  assert.equal(params, "request", "参数数量契约(二轮 P1):恰 1 个简单标识符形参,不用默认参数/rest,wire 字段名 = request");
+});
+
 // ── 超时与取消 ──────────────────────────────────────────────────────────────
 
 test("S3.2 超时:悬挂 fetch 在期限内退出为 timeout,底层收到 abort,迟到响应被忽略", async () => {

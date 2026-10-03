@@ -314,3 +314,308 @@ test("S3.1 normalizeRepos:owner/name 解析、坏条目过滤、空白容忍", (
   assert.deepEqual(host.normalizeRepos(undefined), []);
   assert.deepEqual(host.normalizeRepos("octocat/hello-world"), []);
 });
+
+// ── 0.9.0 主题:归一 / 初始解析 / 默认检测链 / 枚举色与标签 pill ──────────────
+
+const { normalizeTheme, resolveInitialTheme, detectDefaultTheme, hostThemeHint, computedBackgroundLuminance, statusColorHex, labelPillStyle } = internals;
+
+test("0.9.0 normalizeTheme:合法值放行,非法值(含大小写变体/非字符串)一律 null", () => {
+  assert.equal(normalizeTheme("light"), "light");
+  assert.equal(normalizeTheme("dark"), "dark");
+  assert.equal(normalizeTheme("Light"), null, "大小写敏感:非法值忽略");
+  assert.equal(normalizeTheme("banana"), null);
+  assert.equal(normalizeTheme(undefined), null);
+  assert.equal(normalizeTheme(null), null);
+  assert.equal(normalizeTheme(true), null);
+});
+
+test("0.9.0 resolveInitialTheme:持久化偏好优先,非法偏好走默认检测(链式)", () => {
+  assert.equal(resolveInitialTheme("light", {}), "light");
+  assert.equal(resolveInitialTheme("nonsense", {}), "dark", "非法偏好 → 检测;env 空走兜底暗色");
+  assert.equal(resolveInitialTheme(undefined, { matchMedia: () => ({ matches: true }) }), "dark");
+  assert.equal(resolveInitialTheme(undefined, { matchMedia: () => ({ matches: false }) }), "light");
+});
+
+test("0.9.0 detectDefaultTheme:宿主属性/类名线索 → 背景 luminance → matchMedia → 兜底暗色", () => {
+  const fakeDoc = (attributes) => ({
+    documentElement: { getAttribute: (name) => attributes.html?.[name] },
+    body: { getAttribute: (name) => attributes.body?.[name] },
+  });
+  assert.equal(detectDefaultTheme({ document: fakeDoc({ html: { "data-theme": "dark" } }) }), "dark", "data-theme 命中");
+  assert.equal(detectDefaultTheme({ document: fakeDoc({ body: { "data-color-mode": "light" } }) }), "light", "body 的 data 属性命中");
+  assert.equal(detectDefaultTheme({ document: fakeDoc({ html: { class: "app theme-dark" } }) }), "dark", "class 词元命中");
+  assert.equal(detectDefaultTheme({ document: fakeDoc({}) }), "dark", "无线索 → 兜底暗色");
+  assert.equal(
+    detectDefaultTheme({ document: fakeDoc({}), surfaceLuminance: () => 0.06 }),
+    "dark",
+    "深底 luminance → dark",
+  );
+  assert.equal(
+    detectDefaultTheme({ document: fakeDoc({}), surfaceLuminance: () => 0.95 }),
+    "light",
+    "亮底 luminance → light",
+  );
+  assert.equal(
+    detectDefaultTheme({ surfaceLuminance: () => 0.95, matchMedia: () => ({ matches: true }) }),
+    "light",
+    "宿主线索优先于系统偏好",
+  );
+  assert.equal(detectDefaultTheme({ matchMedia: () => { throw new Error("not implemented"); } }), "dark", "matchMedia 抛错按缺席处理 → 兜底暗色");
+  assert.equal(detectDefaultTheme(undefined), "dark", "无 env 同样兜底");
+});
+
+test("0.9.0 hostThemeHint / computedBackgroundLuminance:纯函数矩阵(不含 DOM)", () => {
+  assert.equal(hostThemeHint({ documentElement: null, body: undefined }), null);
+  assert.equal(hostThemeHint({ documentElement: { getAttribute: () => "dark" } }), "dark");
+  assert.equal(hostThemeHint({ documentElement: { getAttribute: (name) => (name === "class" ? "mode-night" : undefined) } }), null, "class 词元必须含 dark/light 字面,night 不算");
+  const luminance = computedBackgroundLuminance({ backgroundColor: "rgb(13, 17, 23)" });
+  assert.ok(luminance !== null && luminance < 0.5, `GitHub 暗色画布 #0d1117 判暗:${luminance}`);
+  assert.ok(computedBackgroundLuminance({ backgroundColor: "rgb(246, 248, 250)" }) > 0.5, "浅色画布 #f6f8fa 判亮");
+  assert.equal(computedBackgroundLuminance({ backgroundColor: "rgba(0, 0, 0, 0)" }), null, "全透明不可判定");
+  assert.equal(computedBackgroundLuminance({ backgroundColor: "" }), null);
+  assert.equal(computedBackgroundLuminance(undefined), null);
+});
+
+test("0.9.0 statusColorHex:枚举色两套 hex,大小写不敏感,未知/缺席回退灰", () => {
+  assert.equal(statusColorHex("BLUE", "light"), "#0969da");
+  assert.equal(statusColorHex("blue", "dark"), "#4493f8", "大小写不敏感 + 主题分支");
+  assert.equal(statusColorHex("MAGENTA", "light"), "#6e7781", "未知枚举回退灰");
+  assert.equal(statusColorHex(null, "dark"), "#8b949e", "缺席(兜底列)同样回退灰");
+});
+
+test("0.9.0 labelPillStyle:合法 hex 给 fg+半透明底,非法/缺席退化 undefined", () => {
+  const light = labelPillStyle("ff8800", "light");
+  assert.equal(light.backgroundColor, "rgba(255, 136, 0, 0.2)");
+  assert.ok(light.color.startsWith("rgb(") && light.color.includes("158"), "浅色主题前景压暗(0.62x)");
+  const dark = labelPillStyle("ff8800", "dark");
+  assert.equal(dark.backgroundColor, "rgba(255, 136, 0, 0.18)");
+  assert.ok(dark.color.startsWith("rgb("), "暗色主题前景微亮");
+  assert.equal(labelPillStyle(undefined, "light"), undefined, "color 缺席(旧宿主)→ 主题默认 pill");
+  assert.equal(labelPillStyle("#ff8800", "light"), undefined, "带 # 的形状不算合法 hex");
+  assert.equal(labelPillStyle("zzzzzz", "dark"), undefined);
+});
+
+// ── 0.9.0 拖拽写回:状态机新事件(MOVE_START/OK/FAILED)+ 乐观纯函数 + pending 守卫 ──
+
+const { moveCardInBoard, dragDisabledReason } = internals;
+
+/** 两列样例看板(Todo o1 有卡 a1/a2,Done o2 空)。 */
+const moveBoard = () => ({
+  project: { id: "p1", number: 7, title: "Alpha" },
+  hasStatusField: true,
+  columns: [
+    { optionId: "o1", color: "GRAY", name: "Todo", items: [{ id: "a1", title: "甲", assignees: [], labels: [], statusOptionId: "o1" }, { id: "a2", title: "乙", assignees: [], labels: [], statusOptionId: "o1" }] },
+    { optionId: "o2", color: "GREEN", name: "Done", items: [] },
+  ],
+});
+
+const moveReadyState = (board = moveBoard()) => {
+  let state = boardTransition(initialBoardState("light"), { type: "TOKEN_KNOWN" });
+  state = boardTransition(state, { type: "LIST_OK", projects: [{ id: "p1", number: 7, title: "Alpha" }], warnings: [] });
+  state = boardTransition(state, { type: "SELECT", key: "#7" });
+  return boardTransition(state, { type: "BOARD_OK", board, key: "#7", totalCount: 2 });
+};
+
+test("0.9.0 moveCardInBoard:移到目标列末尾,原看板不被改写(快照回滚的依据)", () => {
+  const board = moveBoard();
+  const moved = moveCardInBoard(board, "a1", "o2");
+  assert.equal(moved.columns[1].items[0]?.id, "a1", "卡落在目标列");
+  assert.equal(moved.columns[0].items.map((item) => item.id).join(","), "a2", "源列移除该卡");
+  assert.deepEqual(board.columns[0].items.map((item) => item.id), ["a1", "a2"], "入参看板保持原样(纯函数)");
+  assert.deepEqual(moved.columns.map((column) => column.optionId), ["o1", "o2"], "列序不变");
+});
+
+test("0.9.0 moveCardInBoard:找不到卡/目标列、同列、形状不完整 → 原引用返回(无乐观可做)", () => {
+  const board = moveBoard();
+  assert.equal(moveCardInBoard(board, "ghost", "o2"), board);
+  assert.equal(moveCardInBoard(board, "a1", "o_ghost"), board);
+  assert.equal(moveCardInBoard(board, "a1", "o1"), board, "同列 = 列内排序不支持,原引用");
+  assert.equal(moveCardInBoard(undefined, "a1", "o2"), undefined);
+  const shapeless = {};
+  assert.equal(moveCardInBoard(shapeless, "a1", "o2"), shapeless, "缺 columns 的形状原样返回");
+  assert.equal(moveCardInBoard(board, "", "o2"), board);
+  assert.equal(moveCardInBoard(board, "a1", null), board);
+});
+
+test("0.9.0 boardTransition MOVE_START:建立 pendingMove(含拖拽前快照)+ 乐观上板", () => {
+  const board = moveBoard();
+  const state = boardTransition(moveReadyState(board), { type: "MOVE_START", itemId: "a1", fromOptionId: "o1", toOptionId: "o2" });
+  assert.equal(state.pendingMove?.itemId, "a1");
+  assert.equal(state.pendingMove?.fromOptionId, "o1");
+  assert.equal(state.pendingMove?.toOptionId, "o2");
+  assert.equal(state.pendingMove?.snapshot, board, "快照 = 拖拽前看板(同引用)");
+  assert.equal(state.board.columns[1].items[0]?.id, "a1", "乐观上板");
+  assert.equal(state.moveError, null, "发起即清上一次失败提示");
+});
+
+test("0.9.0 boardTransition MOVE_START 守卫矩阵:二次拖拽/同列/找不到卡/目标列都是原引用", () => {
+  const board = moveBoard();
+  const base = moveReadyState(board);
+  const started = boardTransition(base, { type: "MOVE_START", itemId: "a1", fromOptionId: "o1", toOptionId: "o2" });
+  assert.equal(boardTransition(started, { type: "MOVE_START", itemId: "a2", fromOptionId: "o1", toOptionId: "o2" }), started, "pending 在场:第二次拖拽忽略");
+  assert.equal(boardTransition(base, { type: "MOVE_START", itemId: "a1", fromOptionId: "o1", toOptionId: "o1" }), base, "同列(列内排序)拒绝");
+  assert.equal(boardTransition(base, { type: "MOVE_START", itemId: "ghost", fromOptionId: "o1", toOptionId: "o2" }), base, "卡不存在拒绝");
+  assert.equal(boardTransition(base, { type: "MOVE_START", itemId: "a1", fromOptionId: "o1", toOptionId: "o_ghost" }), base, "目标列不存在拒绝");
+  const emptyState = initialBoardState();
+  assert.equal(boardTransition(emptyState, { type: "MOVE_START", itemId: "a1", fromOptionId: null, toOptionId: "o2" }), emptyState, "无看板拒绝(空态下原引用)");
+});
+
+test("0.9.0 boardTransition MOVE_OK:清 pending 保乐观态;MOVE_FAILED:回滚快照 + moveError", () => {
+  const board = moveBoard();
+  let state = boardTransition(moveReadyState(board), { type: "MOVE_START", itemId: "a1", fromOptionId: "o1", toOptionId: "o2" });
+  const optimistic = state.board;
+  state = boardTransition(state, { type: "MOVE_OK" });
+  assert.equal(state.pendingMove, null, "成功:pending 清空");
+  assert.equal(state.board, optimistic, "成功:乐观态维持(权威覆盖交给 BOARD_OK)");
+  assert.equal(state.moveError, null);
+
+  const failing = boardTransition(moveReadyState(board), { type: "MOVE_START", itemId: "a1", fromOptionId: "o1", toOptionId: "o2" });
+  const rolledBack = boardTransition(failing, { type: "MOVE_FAILED", code: "forbidden", message: "403" });
+  assert.equal(rolledBack.board, board, "失败:回滚到拖拽前快照(同引用)");
+  assert.equal(rolledBack.pendingMove, null);
+  jsonEqual(rolledBack.moveError, { code: "forbidden", message: "403" }, "moveError 记录 code+message(跨 realm 用 jsonEqual)");
+  assert.equal(boardTransition(moveReadyState(), { type: "MOVE_FAILED", code: "x", message: "y" }).moveError, null, "无 pending 时 MOVE_FAILED 不动状态");
+});
+
+test("0.9.0 boardTransition 权威收口:BOARD_OK/BOARD_START/FAILED/空列表 LIST_OK 作废 pending 与 moveError", () => {
+  const board = moveBoard();
+  const started = (state) => boardTransition(state, { type: "MOVE_START", itemId: "a1", fromOptionId: "o1", toOptionId: "o2" });
+  let state = started(moveReadyState(board));
+  state = boardTransition(state, { type: "BOARD_START" });
+  assert.equal(state.pendingMove, null, "BOARD_START(reload/切换)作废 pending:完成即权威态");
+  state = started(moveReadyState(board));
+  state = boardTransition(state, { type: "BOARD_OK", board: moveBoard(), key: "#7", totalCount: 2 });
+  assert.equal(state.pendingMove, null, "BOARD_OK 权威上账同时作废 pending");
+  state = started(moveReadyState(board));
+  state = boardTransition(state, { type: "FAILED", stage: "board", code: "http_error", text: "x", transient: false });
+  assert.equal(state.pendingMove, null, "FAILED(错误态看板区退位)作废 pending");
+  state = boardTransition(started(moveReadyState(board)), { type: "START" });
+  assert.equal(state.moveError, null, "START(整链重开)清 moveError");
+});
+
+test("0.9.0 boardTransition THEME_SET:合法值切换,非法值原引用;initialBoardState(theme) 兜底暗色", () => {
+  const light = boardTransition(initialBoardState("dark"), { type: "THEME_SET", theme: "light" });
+  assert.equal(light.theme, "light");
+  assert.equal(boardTransition(light, { type: "THEME_SET", theme: "nonsense" }), light, "非法主题原引用返回");
+  assert.equal(initialBoardState().theme, "dark", "缺席 → 兜底暗色");
+  assert.equal(initialBoardState("light").theme, "light");
+  assert.equal(initialBoardState("banana").theme, "dark", "非法初值同样兜底");
+});
+
+// ── 0.9.0 载荷扩展透传:coerceBoard 字段缺席允许、在场须形状正确 ────────────────
+
+test("0.9.0 coerceBoard:projectNodeId/statusFieldId/列 color/labels color/头像明细 全部透传", () => {
+  const rich = internals.coerceBoardResult({
+    ok: true,
+    board: {
+      project: { number: 7 },
+      hasStatusField: true,
+      projectNodeId: "PV_node",
+      statusFieldId: "SF_node",
+      columns: [
+        { optionId: "o1", color: "BLUE", name: "Todo", items: [{ id: "a1", title: "卡", assignees: ["octocat"], assigneeDetails: [{ login: "octocat", avatarUrl: "https://example.com/a.png" }], labels: [{ name: "P1", color: "ff8800" }], statusOptionId: "o1" }] },
+        { optionId: null, color: null, name: "", fallback: "unfiled", items: [{ id: "a2", title: "兜底卡" }] },
+      ],
+    },
+  });
+  assert.equal(rich.ok, true, "合法扩展形状原样放行");
+  assert.equal(rich.board.projectNodeId, "PV_node");
+  assert.equal(rich.board.columns[0].color, "BLUE");
+  assert.equal(rich.board.columns[0].items[0].assigneeDetails[0].avatarUrl, "https://example.com/a.png");
+  assert.equal(rich.board.columns[1].optionId, null, "兜底列 optionId null 放行");
+  // 旧宿主形状(扩展字段全缺席)不受影响
+  const legacy = internals.coerceBoardResult({ ok: true, board: { columns: [{ name: "Todo", items: [{ id: "a1", title: "卡", assignees: ["octocat"], labels: [{ name: "P1" }] }] }] } });
+  assert.equal(legacy.ok, true, "扩展字段缺席允许(旧宿主输出照常)");
+});
+
+test("0.9.0 coerceBoard:在场但形状错误 → shape_error(可观测,不静默纠正)", () => {
+  const cases = [
+    { board: { columns: [], projectNodeId: 42 }, label: "projectNodeId 非字符串" },
+    { board: { columns: [], statusFieldId: 42 }, label: "statusFieldId 非字符串" },
+    { board: { columns: [{ optionId: 42, name: "Todo", items: [] }] }, label: "列 optionId 非字符串" },
+    { board: { columns: [{ optionId: null, name: "Todo", items: [] }] }, label: "列 optionId null 允许", ok: true },
+    { board: { columns: [{ color: 42, name: "Todo", items: [] }] }, label: "列 color 非字符串" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", assignees: "octocat" }] }] }, label: "assignees 非数组" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", assignees: [42] }] }] }, label: "assignee 条目畸形" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", assignees: [{ login: 42 }] }] }] }, label: "assignee.login 非字符串" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", assignees: [{ avatarUrl: 42 }] }] }] }, label: "assignee.avatarUrl 非字符串" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", assigneeDetails: "x" }] }] }, label: "assigneeDetails 非数组" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", assigneeDetails: [null] }] }] }, label: "assigneeDetails 条目非对象" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", labels: "x" }] }] }, label: "labels 非数组" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", labels: [null] }] }] }, label: "label 条目非对象" },
+    { board: { columns: [{ name: "Todo", items: [{ id: "a1", labels: [{ color: 42 }] }] }] }, label: "label.color 非字符串" },
+  ];
+  for (const item of cases) {
+    const outcome = internals.coerceBoardResult({ ok: true, ...item });
+    if (item.ok === true) assert.equal(outcome.ok, true, item.label);
+    else assert.equal(outcome.error?.code, "shape_error", `${item.label} → shape_error(${JSON.stringify(outcome.error?.message ?? "")})`);
+  }
+});
+
+test("0.9.0 dragDisabledReason:pending/无 Status 字段/fallback 列给词典键,正常列 null", () => {
+  const board = moveBoard();
+  const columns = board.columns;
+  assert.equal(dragDisabledReason(board, columns[0], null), null, "正常列可拖");
+  assert.equal(dragDisabledReason(board, columns[0], { itemId: "a1" }), "dragHintPending", "移动在途不可拖");
+  assert.equal(dragDisabledReason({ ...board, hasStatusField: false }, columns[0], null), "dragHintNoStatus", "无 Status 字段不可拖");
+  assert.equal(dragDisabledReason(board, { optionId: null, fallback: "unfiled", items: [] }, null), "dragHintFallback", "兜底列不可拖");
+  assert.equal(dragDisabledReason(board, undefined, null), "dragHintFallback");
+});
+
+test("0.9.0 控制器 pending 守卫:移动在途时轮询 tick 跳过(与 inFlight 同型),settle 后恢复", async () => {
+  let moveCalls = 0;
+  let boardCalls = 0;
+  let releaseMove;
+  const gate = new Promise((resolve) => {
+    releaseMove = resolve;
+  });
+  const api = {
+    status: async () => ({ ok: true, status: { tokenConfigured: true } }),
+    listProjects: async () => ({ ok: true, projects: [{ id: "p1", number: 7, title: "Alpha" }] }),
+    getBoard: async () => {
+      boardCalls += 1;
+      return { ok: true, board: moveBoard(), totalCount: 2 };
+    },
+    moveCard: async () => {
+      moveCalls += 1;
+      return gate.then(() => ({ ok: true }));
+    },
+  };
+  const registered = [];
+  const controller = internals.createBoardController({
+    getApi: () => api,
+    t: (key) => key,
+    polling: {
+      intervalMs: 30_000,
+      setInterval: (callback, ms) => {
+        registered.push(callback);
+        return () => registered.pop();
+      },
+      isVisible: () => true,
+    },
+    delay: () => Promise.resolve(),
+    scheduleRetry: () => () => {},
+    initialTheme: "light",
+  });
+  const settle = async (rounds = 6) => {
+    for (let round = 0; round < rounds; round += 1) await new Promise((resolve) => setTimeout(resolve, 1));
+  };
+  controller.start();
+  await settle();
+  assert.equal(controller.getSnapshot().phase, "ready");
+  assert.equal(boardCalls, 1, "初拉一次");
+  controller.requestMove({ itemId: "a1", fromOptionId: "o1", toOptionId: "o2" });
+  await settle(2);
+  assert.equal(moveCalls, 1, "写回在途");
+  registered[0](); // 轮询 tick:pending 在场 → 跳过(不得叠发 getBoard)
+  await settle(2);
+  assert.equal(boardCalls, 1, "pending 期间轮询跳过");
+  assert.equal(controller.getSnapshot().pendingMove?.itemId, "a1", "乐观态不受 tick 影响");
+  releaseMove();
+  await settle(2);
+  assert.equal(controller.getSnapshot().pendingMove, null, "写回成功,pending 清空");
+  registered[0](); // 下一轮 tick:恢复轮询
+  await settle(2);
+  assert.equal(boardCalls, 2, "移动 settle 后轮询恢复");
+  controller.dispose();
+});

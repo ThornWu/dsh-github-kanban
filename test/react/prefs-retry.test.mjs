@@ -34,7 +34,7 @@ const makeFace = (overrides = {}) => {
 
 // ── 偏好持久化与隐私隔离(验收矩阵「同 origin 换身份」行) ───────────────────
 
-test("S3.4 偏好:有效的持久化选择被延续(初拉偏好项目),写回仅含 { savedAt, selectedKey }", async () => {
+test("S3.4 偏好:有效的持久化选择被延续(初拉偏好项目),写回仅含 { savedAt, selectedKey, theme }", async () => {
   const { face, boardCalls } = makeFace();
   const panel = await mountPanel({
     face,
@@ -46,7 +46,7 @@ test("S3.4 偏好:有效的持久化选择被延续(初拉偏好项目),写回�
   assert.deepEqual(boardCalls.map((call) => call.projectNumber), [9], "初拉偏好选中的 #9");
   assert.ok(panel.text().includes("BetaColumn"), "渲染 #9 的看板");
   const stored = JSON.parse(panel.dom.window.localStorage.getItem(PREFS_KEY));
-  assert.deepEqual(Object.keys(stored).sort(), ["savedAt", "selectedKey"], "只持久化选择键,不含任何业务数据");
+  assert.deepEqual(Object.keys(stored).sort(), ["savedAt", "selectedKey", "theme"], "0.9.0 起带 theme(UI 偏好);仍不含任何业务数据");
   assert.equal(stored.selectedKey, "#9");
   await panel.unmount();
 });
@@ -188,4 +188,79 @@ test("S3.4 StrictMode:effect 双调用(cleanup 真实执行)后最终状态一�
   assert.equal(intervals.length, 1, `轮询注册恰好 1 个:${JSON.stringify(intervals)}`);
   await panel.unmount();
   assert.ok(!panel.clock.pending().some((task) => task.kind === "interval"), "卸载后全部收口");
+});
+
+// ── 0.9.0 主题:切换按钮 / 持久化 / 非法存储值忽略 / 默认检测(偏好 > 检测链) ──
+// jsdom 无 matchMedia、无宿主主题线索、背景全透明 → 默认检测落到兜底暗色;
+// 需要「亮色默认」的用例用 domStubs 注入 matchMedia 假返回或宿主 data-theme 属性。
+
+test("0.9.0 主题:切换按钮循环 浅色↔暗色,data-tgk-theme 随动并持久化进 prefs", async () => {
+  const { face } = makeFace();
+  const panel = await mountPanel({
+    face,
+    domStubs: (dom) => {
+      dom.window.matchMedia = (query) => ({ media: query, matches: false }); // 系统偏好亮色 → 初始 light
+    },
+  });
+  const root = () => panel.$(".tgk-root");
+  const themeToggle = () => panel.$$(".tgk-themeToggle")[0];
+  assert.ok(themeToggle() !== undefined, "工具栏带主题切换按钮");
+  assert.equal(root().getAttribute("data-tgk-theme"), "light", "matchMedia(false) → 初始亮色");
+  const labelBefore = themeToggle().getAttribute("aria-label");
+  assert.equal(labelBefore, "切换到暗色模式", "aria-label 指向切换目标(暗)");
+
+  await panel.fireClick(themeToggle());
+  assert.equal(root().getAttribute("data-tgk-theme"), "dark", "点击后切到暗色");
+  assert.equal(themeToggle().getAttribute("aria-label"), "切换到浅色模式", "aria-label 翻转");
+  let stored = JSON.parse(panel.dom.window.localStorage.getItem(PREFS_KEY));
+  assert.equal(stored.theme, "dark", "主题选择落盘");
+
+  await panel.fireClick(themeToggle());
+  assert.equal(root().getAttribute("data-tgk-theme"), "light", "再点切回亮色");
+  stored = JSON.parse(panel.dom.window.localStorage.getItem(PREFS_KEY));
+  assert.equal(stored.theme, "light");
+  assert.ok(!panel.text().includes("读取失败"), "主题切换不扰动数据链");
+  await panel.unmount();
+});
+
+test("0.9.0 主题:持久化的合法 theme 延续(优先于检测),非法存储值忽略走检测", async () => {
+  const { face } = makeFace();
+  const darkPanel = await mountPanel({
+    face,
+    seedStorage: { [PREFS_KEY]: JSON.stringify({ savedAt: Date.now(), theme: "dark" }) },
+    domStubs: (dom) => {
+      dom.window.matchMedia = (query) => ({ media: query, matches: false }); // 检测会说亮色
+    },
+  });
+  assert.equal(darkPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "dark", "偏好 dark 优先于检测(light)");
+  await darkPanel.unmount();
+
+  const invalidPanel = await mountPanel({
+    face,
+    seedStorage: { [PREFS_KEY]: JSON.stringify({ savedAt: Date.now(), theme: "banana" }) },
+    domStubs: (dom) => {
+      dom.window.matchMedia = (query) => ({ media: query, matches: false });
+    },
+  });
+  assert.equal(invalidPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "light", "非法 theme 忽略 → 检测(matchMedia false → light)");
+  const stored = JSON.parse(invalidPanel.dom.window.localStorage.getItem(PREFS_KEY));
+  assert.equal(stored.theme, "light", "写回的是合法化后的当前主题");
+  await invalidPanel.unmount();
+});
+
+test("0.9.0 主题默认检测:dsh 宿主 data-theme 线索优先于系统偏好;全无线索兜底暗色", async () => {
+  const { face } = makeFace();
+  const hostLightPanel = await mountPanel({
+    face,
+    domStubs: (dom) => {
+      dom.window.matchMedia = (query) => ({ media: query, matches: true }); // 系统偏好暗色
+      dom.window.document.documentElement.setAttribute("data-theme", "light"); // 宿主说亮色
+    },
+  });
+  assert.equal(hostLightPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "light", "宿主线索(亮)压过系统偏好(暗)");
+  await hostLightPanel.unmount();
+
+  const fallbackPanel = await mountPanel({ face }); // jsdom:无线索、无 matchMedia → 兜底
+  assert.equal(fallbackPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "dark", "兜底暗色");
+  await fallbackPanel.unmount();
 });

@@ -1,6 +1,6 @@
 # 路线图
 
-当前版本 0.8.0：只读链路与三轮整改已合入，MIT 许可证已确定。功能说明见 [README](README.md)，历史证据见 [整改摘要](notes/remediation-report.md)。这里仅维护未完成项。
+当前版本 0.9.0：读链路、三轮整改与 Status 拖拽写回已合入，MIT 许可证已确定。功能说明见 [README](README.md)，历史证据见 [整改摘要](notes/remediation-report.md)。这里仅维护未完成项。
 
 ## Alpha 验收
 
