@@ -1,9 +1,33 @@
 {
   "name": "@local/thorn-github-kanban",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "private": true,
   "type": "module",
-  "description": "dsh Web UI 插件:GitHub Projects(Projects v2)看板全局面板。同一个包同时提供宿主半边(数据服务)与浏览器半边(左栏 Global panels 入口 + 主区页面)",
+  "description": "dsh Web UI 插件:GitHub Projects(Projects v2)只读看板全局面板。同一个 npm 包同时提供宿主半边(lib/index.js,@Remote 数据服务)与浏览器半边(lib/client.js,左栏 Global panels 入口 + 主区页面),通过 cordis.patch.yml 挂载。",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "github",
+    "projects-v2",
+    "kanban",
+    "cordis",
+    "plugin",
+    "read-only"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "lint": "node --check lib/index.js && node --check lib/client.js",
+    "test": "npm run lint && npm run test:smoke && npm run test:unit && npm run test:react && npm run pack:check",
+    "test:smoke": "node scripts/smoke-load.mjs",
+    "test:unit": "node --test test/pure.test.mjs test/service.test.mjs test/cache.test.mjs test/contract.test.mjs test/syntax.test.mjs",
+    "test:react": "node --test test/react/board-lifecycle.test.mjs test/react/prefs-retry.test.mjs",
+    "test:strict": "node --unhandled-rejections=strict scripts/smoke-load.mjs && node --unhandled-rejections=strict --test test/pure.test.mjs test/service.test.mjs test/cache.test.mjs test/contract.test.mjs test/syntax.test.mjs test/pack.test.mjs test/react/board-lifecycle.test.mjs test/react/prefs-retry.test.mjs",
+    "pack:check": "npm pack --dry-run && node --test test/pack.test.mjs"
+  },
+  "homepage": "https://github.com/<owner>/dsh-github-kanban#readme",
+  "bugs": "https://github.com/<owner>/dsh-github-kanban/issues",
   "main": "lib/index.js",
   "exports": {
     ".": {
@@ -17,7 +41,8 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
-    "cordis.patch.yml"
+    "cordis.patch.yml",
+    "README.md"
   ],
   "dsh": {
     "bundle": {
@@ -32,5 +57,10 @@
       ],
       "platform": "web"
     }
+  },
+  "devDependencies": {
+    "jsdom": "29.1.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
   }
 }
