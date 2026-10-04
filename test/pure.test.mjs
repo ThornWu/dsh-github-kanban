@@ -317,7 +317,7 @@ test("S3.1 normalizeRepos:owner/name 解析、坏条目过滤、空白容忍", (
 
 // ── 0.9.0 主题:归一 / 初始解析 / 默认检测链 / 枚举色与标签 pill ──────────────
 
-const { normalizeTheme, resolveInitialTheme, detectDefaultTheme, hostThemeHint, computedBackgroundLuminance, statusColorHex, labelPillStyle } = internals;
+const { normalizeTheme, normalizeMode, cycleThemeMode, resolveInitialMode, hostThemeMarker, detectDefaultTheme, hostThemeHint, computedBackgroundLuminance, statusColorHex, labelPillStyle } = internals;
 
 test("0.9.0 normalizeTheme:合法值放行,非法值(含大小写变体/非字符串)一律 null", () => {
   assert.equal(normalizeTheme("light"), "light");
@@ -329,11 +329,58 @@ test("0.9.0 normalizeTheme:合法值放行,非法值(含大小写变体/非字�
   assert.equal(normalizeTheme(true), null);
 });
 
-test("0.9.0 resolveInitialTheme:持久化偏好优先,非法偏好走默认检测(链式)", () => {
-  assert.equal(resolveInitialTheme("light", {}), "light");
-  assert.equal(resolveInitialTheme("nonsense", {}), "dark", "非法偏好 → 检测;env 空走兜底暗色");
-  assert.equal(resolveInitialTheme(undefined, { matchMedia: () => ({ matches: true }) }), "dark");
-  assert.equal(resolveInitialTheme(undefined, { matchMedia: () => ({ matches: false }) }), "light");
+test("0.9.0 主题模式三态:normalizeMode 合法值放行,cycleThemeMode 循环 auto→light→dark→auto,resolveInitialMode 非法/缺席回 auto", () => {
+  assert.equal(normalizeMode("auto"), "auto");
+  assert.equal(normalizeMode("light"), "light");
+  assert.equal(normalizeMode("dark"), "dark");
+  assert.equal(normalizeMode("Auto"), null, "大小写敏感:非法值忽略");
+  assert.equal(normalizeMode("banana"), null);
+  assert.equal(cycleThemeMode("auto"), "light");
+  assert.equal(cycleThemeMode("light"), "dark");
+  assert.equal(cycleThemeMode("dark"), "auto");
+  assert.equal(cycleThemeMode("banana"), "light", "非法值按 auto 起步循环");
+  assert.equal(resolveInitialMode("dark"), "dark", "持久化模式(合法三值)优先");
+  assert.equal(resolveInitialMode("auto"), "auto", "显式 auto 也是合法持久化值");
+  assert.equal(resolveInitialMode("nonsense"), "auto", "非法持久化值回 auto");
+  assert.equal(resolveInitialMode(undefined), "auto", "缺席回 auto(跟随 dsh 是默认)");
+});
+
+test("0.9.0 hostThemeMarker:dsh 标记体系(body[data-ds-dark-theme] / html[data-ds-theme-source])判定,双缺席 = 非 dsh 环境 null", () => {
+  const docLike = (bodyAttrs, htmlAttrs) => ({
+    body: { hasAttribute: (name) => bodyAttrs.includes(name) },
+    documentElement: { hasAttribute: (name) => htmlAttrs.includes(name) },
+  });
+  assert.equal(hostThemeMarker(docLike(["data-ds-dark-theme"], ["data-ds-theme-source"])), "dark", "暗标记在场 = dark");
+  assert.equal(hostThemeMarker(docLike([], ["data-ds-theme-source"])), "light", "来源标记在场而无暗标记 = light");
+  assert.equal(hostThemeMarker(docLike([], [])), null, "双缺席 = 非 dsh 环境,交回退链");
+  assert.equal(hostThemeMarker(null), null, "无 document 沙箱安全");
+});
+
+test("0.9.0 boardTransition MODE_SET:三态切换,auto 生效主题取 event.theme(缺席保持),非法原引用", () => {
+  const base = initialBoardState("auto", "dark");
+  assert.equal(base.mode, "auto");
+  assert.equal(base.theme, "dark");
+  const pinned = boardTransition(base, { type: "MODE_SET", mode: "light" });
+  assert.equal(pinned.mode, "light", "显式 light 生效");
+  assert.equal(pinned.theme, "light");
+  assert.equal(boardTransition(pinned, { type: "MODE_SET", mode: "banana" }), pinned, "非法模式原引用返回");
+  const backToAuto = boardTransition(pinned, { type: "MODE_SET", mode: "auto", theme: "dark" });
+  assert.equal(backToAuto.mode, "auto");
+  assert.equal(backToAuto.theme, "dark", "切回 auto 立即采用控制器读到的宿主主题");
+  const noThemeAvailable = boardTransition(backToAuto, { type: "MODE_SET", mode: "auto" });
+  assert.equal(noThemeAvailable.theme, "dark", "event.theme 缺席保持当前生效主题(宿主读数不可用时不跳变)");
+  assert.equal(boardTransition(base, { type: "MODE_SET", mode: "dark", theme: "light" }).theme, "dark", "显式 dark 忽略 event.theme(固定语义)");
+});
+
+test("0.9.0 boardTransition THEME_SET:合法值切换,非法值原引用;initialBoardState(mode, effective) 兜底暗色", () => {
+  const light = boardTransition(initialBoardState("auto", "dark"), { type: "THEME_SET", theme: "light" });
+  assert.equal(light.theme, "light", "auto 态下宿主联动经 THEME_SET 更新生效主题(模式不变)");
+  assert.equal(light.mode, "auto");
+  assert.equal(boardTransition(light, { type: "THEME_SET", theme: "nonsense" }), light, "非法主题原引用返回");
+  assert.equal(initialBoardState().theme, "dark", "缺席 → 兜底暗色");
+  assert.equal(initialBoardState("light").theme, "light");
+  assert.equal(initialBoardState("banana", "light").theme, "light", "非法模式回 auto,生效主题取第二参");
+  assert.equal(initialBoardState("banana").theme, "dark", "非法模式 + 无宿主读数同样兜底暗色");
 });
 
 test("0.9.0 detectDefaultTheme:宿主属性/类名线索 → 背景 luminance → matchMedia → 兜底暗色", () => {

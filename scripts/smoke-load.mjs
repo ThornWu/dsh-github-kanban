@@ -2843,16 +2843,27 @@ const makePolling = (isVisible = () => true) => {
   const tree = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
   const text = textOf(tree);
   check("0.9.0 面板头:徽章 alpha(替代只读),说明句含写回指引与边界、保留数据来源句", text.includes("alpha") && text.includes("拖拽卡片到其他列会更新 GitHub 上的 Status") && text.includes("不支持列内排序、建卡与删卡") && text.includes("数据来自 GitHub Projects v2"), text.slice(0, 120));
-  // 2) 主题切换按钮:smoke 沙箱无 matchMedia/宿主线索 → 初始暗色;点击翻转并落盘 theme
+  // 2) 主题切换按钮(0.9.0 三态):smoke 沙箱无 matchMedia/宿主线索 → auto 态生效主题兜底暗色;
+  //    循环 auto → light → dark → auto,aria-label 恒指向点击后的状态
   const miniTree0 = await settleFresh(bodySeat.component, makeProps(stateB, boardApi));
   const root0 = findFirst(miniTree0, (node) => node.type === "section" && typeof node.props?.className === "string" && node.props.className.includes("tgk-root"));
   const toggle0 = findFirst(miniTree0, (node) => node.type === "button" && typeof node.props?.className === "string" && node.props.className.includes("tgk-themeToggle"));
-  check("0.9.0 主题:根节点带 data-tgk-theme(沙箱默认暗色),工具栏带切换按钮(svg+aria-label)", root0?.props?.["data-tgk-theme"] === "dark" && toggle0 !== undefined && toggle0.props["aria-label"] === "切换到浅色模式" && typeof toggle0.props.onClick === "function", `theme=${root0?.props?.["data-tgk-theme"]}`);
-  toggle0.props.onClick(); // → THEME_SET(light) → syncPrefs 持久化
+  check("0.9.0 主题:根节点带 data-tgk-theme(沙箱 auto 态兜底暗色),aria-label 指向跟随态", root0?.props?.["data-tgk-theme"] === "dark" && toggle0 !== undefined && toggle0.props["aria-label"] === "主题跟随 dsh 中,点击固定浅色" && typeof toggle0.props.onClick === "function", `theme=${root0?.props?.["data-tgk-theme"]} label=${toggle0?.props["aria-label"]}`);
+  toggle0.props.onClick(); // auto → light(生效主题 dark → light)
   const miniTree1 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
   const root1 = findFirst(miniTree1, (node) => node.type === "section" && typeof node.props?.className === "string" && node.props.className.includes("tgk-root"));
   const toggle1 = findFirst(miniTree1, (node) => node.type === "button" && typeof node.props?.className === "string" && node.props.className.includes("tgk-themeToggle"));
-  check("0.9.0 主题:点击后 data-tgk-theme 翻转为 light,aria-label 反向(指向浅色)", root1?.props?.["data-tgk-theme"] === "light" && toggle1?.props["aria-label"] === "切换到暗色模式", `theme=${root1?.props?.["data-tgk-theme"]}`);
+  check("0.9.0 主题:auto→light 生效主题翻转为 light,aria-label 指向暗色", root1?.props?.["data-tgk-theme"] === "light" && toggle1?.props["aria-label"] === "切换到暗色模式", `theme=${root1?.props?.["data-tgk-theme"]}`);
+  toggle1.props.onClick(); // light → dark
+  const miniTree2 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  const root2 = findFirst(miniTree2, (node) => node.type === "section" && typeof node.props?.className === "string" && node.props.className.includes("tgk-root"));
+  const toggle2 = findFirst(miniTree2, (node) => node.type === "button" && typeof node.props?.className === "string" && node.props.className.includes("tgk-themeToggle"));
+  check("0.9.0 主题:light→dark 生效主题 dark,aria-label 指回跟随 dsh", root2?.props?.["data-tgk-theme"] === "dark" && toggle2?.props["aria-label"] === "跟随 dsh 主题(回到自动)", `theme=${root2?.props?.["data-tgk-theme"]}`);
+  toggle2.props.onClick(); // dark → auto(沙箱无宿主源:生效主题保持 dark,不跳变)
+  const miniTree3 = await miniReact.settle(bodySeat.component, makeProps(stateB, boardApi));
+  const root3 = findFirst(miniTree3, (node) => node.type === "section" && typeof node.props?.className === "string" && node.props.className.includes("tgk-root"));
+  const toggle3 = findFirst(miniTree3, (node) => node.type === "button" && typeof node.props?.className === "string" && node.props.className.includes("tgk-themeToggle"));
+  check("0.9.0 主题:dark→auto 回跟随态(沙箱无宿主源,生效主题保持 dark)", root3?.props?.["data-tgk-theme"] === "dark" && toggle3?.props["aria-label"] === "主题跟随 dsh 中,点击固定浅色", `theme=${root3?.props?.["data-tgk-theme"]}`);
   // 3) 主题持久化:UI 偏好进 prefs(业务数据仍零落盘)
   {
     localStorageStub.__store = {};
@@ -2880,7 +2891,7 @@ const makePolling = (isVisible = () => true) => {
   // 4) 自检接缝:0.9.0 纯函数(主题/乐观移动/可拖性)与载荷透传校验
   {
     const internals = mod.internals;
-    const themeFns = ["normalizeTheme", "resolveInitialTheme", "detectDefaultTheme", "themeEnvironment", "statusColorHex", "labelPillStyle"];
+    const themeFns = ["normalizeTheme", "normalizeMode", "cycleThemeMode", "resolveInitialMode", "hostThemeMarker", "detectDefaultTheme", "themeEnvironment", "hostThemeHint", "statusColorHex", "labelPillStyle"];
     const moveFns = ["moveCardInBoard", "dragDisabledReason"];
     check(
       "0.9.0 internals:主题与拖拽写回纯函数经自检接缝暴露(不经 React 可直驱)",

@@ -47,3 +47,21 @@
 
 - 版本 bump 0.9.0（package.json/lib/index.js VERSION/smoke 版本一致性断言）由主线统一执行——smoke 的 S2.9 版本断言当前仍按 package.json 现值对照，bump 后自然对齐。
 - 真机验收（阶段 5 范畴）：宿主主题线索在 dsh web 的真实属性名（当前按 data-theme/data-color-mode/class 词元宽匹配）；DnD 在真机浏览器与 dsh 布局内的 drop 目标命中；moveCard 真实错误码文案与 README 排障表对照。
+
+## 追加(2026-10-04):主题与 dsh 宿主实时联动
+
+所有者实测提出:面板主题要与 dsh 自身的深浅色切换对齐,而不是挂载时探测一次。
+
+**宿主事实(真机核实)**:dsh 暗色 = `body[data-ds-dark-theme]` 属性在场(浅色时移除);`html[data-ds-theme-source]` 记录主题来源(system/manual),在场即说明 dsh 标记体系生效。
+
+**实现**(主线接手完成;原 agent 超时前已落 三态常量/hostThemeMarker/createHostThemeSource/initialBoardState(mode,effective)/MODE_SET 转换,接线与测试由主线补齐):
+
+- 模式三态 `auto | light | dark`,prefs/v1 theme 字段存模式(缺省/非法 = auto);`state.theme` 恒为生效主题(渲染用)。
+- auto 生效主题 = `hostThemeMarker(document)`(暗标记→dark;来源标记在场无暗标记→light;双缺席=非 dsh 环境,退回 detectDefaultTheme 链:宿主线索→背景 luminance→matchMedia→暗色)。
+- 实时联动:createHostThemeSource 用 MutationObserver 监听 body/documentElement 的 data-ds-dark-theme/data-ds-theme-source/style/class,回调微任务合并;控制器 `syncHostThemeWatch` 挂进 dispatch 副作用链——mode=auto 订阅、显式模式摘除、dispose 断开、start() 重挂载重订并先 applyHostTheme 对齐。订阅不可用(无 MutationObserver/无 document 沙箱)退化为挂载时快照。
+- 按钮 `setMode()`:auto→light→dark→auto 循环;切回 auto 立即读一次宿主标记。THEME_SET 保留为「仅改生效主题不改模式」(auto 态联动专用)。THEME_SET 在 auto 态由 observer 派发,不写模式。
+- 词典新增 themeFollowAuto/themeFollowHost(zh/en),aria-label 恒指向点击后的状态。
+
+**测试**:smoke 242→244(三态循环断言);pure +4(模式归一/循环/hostThemeMarker/MODE_SET 转换;resolveInitialTheme 删除);react 主题 3 用例重写 + 新增实时联动用例(翻转 body 标记断言面板跟随/显式模式不随宿主)= 34→35。合计 404 项全绿。
+
+**真机待验**:dsh 设置 Appearance Light/Dark 切换时面板即时跟随(主线验证)。
