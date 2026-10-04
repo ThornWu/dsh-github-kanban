@@ -1,171 +1,48 @@
-# dev-notes —— 与 TODO.md 调研结论的实测差异
+# 开发笔记
 
-> 来源:Phase 1.1 动工前通读官方包源码。核对的 dsh 版本:**0.2.0-rc.1**。
-> 只读参考根:`$G = /Users/thornwu/.nvm/versions/node/v24.18.0/lib/node_modules/@deepseek-ai/dsh/node_modules/@deepseek-ai`
-> 结论:**有差异**,而且差异集中在「怎么挂上右栏 tab」和「宿主怎么被浏览器调用」这两处,直接影响 Phase 1.1~1.3 的写法。
+以下是本仓库当前实现采用的契约。依据为 2026-09-29 至 10-03 对 dsh 0.2.0-rc.1/rc.2 的源码核验和历史联调；不代表对其他版本的保证。
 
-## 结论速览(先看这 6 条)
+## 代码结构
 
-1. `sidebar.right.pane.tab` 是 **keyed** 座位:按 **tab 类型的 id** 派发,不是「注册就出现」。必须先向 `ctx.sidebarRightTabs` 注册 tab 类型;**title 座位同规则**。
-2. 注册座位时 keyed 用 **`key`**,list 用 `id` —— TODO 里写的 `register({name, id, order, ...})` 只对 list 座位成立。
-3. 注册了类型 ≠ 用户能看见 tab:还需要一个**入口**(guide 条目 / `openTab(kind)` / 资源地址匹配 / 快捷键)。1.1 用 guide 条目当验证入口。
-4. **host 方法暴露给浏览器不是加个 `@Remote` 就完事**:需要 `TypertRemoteService` 子类 + 生成的 `./typert` 与 `./remote` 工件(生成器本机没装),或手写 wire schema 走 `ctx.typert.register()`。1.2 必须先定这条路线。
-5. **`dsh.client.inject` ≠ 插件 `exports.inject`**:前者是 package.json 里的**包名**数组(模块图顺序),后者是浏览器半边导出的**客户端服务名**数组(cordis 等它就绪才 apply)。
-6. 浏览器半边**不打包**:dsh 直接读文件字节当 script 提供,`require` 只能命中平台 seed 词或已注册包名 —— **适配层只能和组件同处一个文件**。
+| 文件 | 职责 |
+| --- | --- |
+| `lib/index.js` | 宿主适配、GraphQL/分页、数据映射、Remote 服务与缓存 |
+| `lib/client.js` | 客户端适配、词典、数据 API、状态机/控制器、视图 |
+| `cordis.patch.yml` | 插件挂载和宿主配置 |
+| `test/`、`scripts/smoke-load.mjs` | 行为测试、装载契约和快速冒烟 |
 
----
+## dsh 契约
 
-## 差异 1:`sidebar.right.pane.tab` 是 keyed 座位,必须先注册 tab 类型
+历史“差异”编号保留供源码注释定位；完整原文可用 `git show a8b459f:notes/dev-notes.md` 查看。
 
-- TODO 原话:「挂载:`ctx.slots.inject("槽位名", () => ctx.slots.register({name, id, order, locale, inject}, 组件))`」+「本产品用槽位:`sidebar.right.pane.tab` + `sidebar.right.pane.tab.title`(右栏 tab,主看板)」。
-- 实际:`sidebar.right.pane.tab` 的契约是 `{ kind: 'keyed', scope: 'session', hookContext, inject }`,注释明确「dispatched with the `id` of the type in force for `tab.kind`」,**注册到座位的 `key` = tab 类型的 id**(`sidebar.right.pane.tab.title` 同规则)。没有类型在位的 kind 会渲染产品自带的「nothing can view this」提示,而不是我们的组件。
-- 证据:
-  - `$G/dsh-client-ui-sidebar-right/lib/types/client/contract/slots.d.ts`(`'sidebar.right.pane.tab'` / `'sidebar.right.pane.tab.title'` 的 kind 与派发说明)
-  - `$G/dsh-client-ui-sidebar-right/lib/types/client/tab-registry.d.ts`(`SidebarRightTabRegistry.register`;「the body and title, which the seat finds under the definition's own `id`」)
-  - 官方样例 `$G/dsh-client-ui-schedule/lib/client.js`:`ctx.effect(() => ctx.sidebarRightTabs.register(scheduleTaskDefinition(t)), ...)` 之后才是两个 `key: SCHEDULE_TASK_ID` 的座位注册
-- 影响:1.1 落地顺序是「文案 → tab 类型 → 座位」,少任何一步都是静默不显示。
+- **座位（差异 1–2、6–7）**：当前入口为 `sidebar.panellist`（list：`id`/`order`），内容为 `main`（keyed：`key`）。右栏 tab 已于 0.3.1 移除，不再作为升级检查目标。
+- **两套 inject（差异 4）**：package.json 的 `dsh.client.inject` 是包名；浏览器导出的 `inject` 是服务名。
+- **单文件交付（差异 5）**：加载器直接提供 client 文件，不做打包/转译；`require` 只解析平台 seed 或已注册包名，不解析相对文件。工厂注册阶段不注入样式。
+- **宿主服务（差异 8）**：通过 `ctx.provide` 注册，样式/文案等副作用按 dsh 生命周期管理。
+- **Remote（差异 3、9）**：宿主采用 `typertRemote` 绑定和原型方法标记，网关走 SRC 回退；浏览器 `$mount` 手写 strict 清单。当前没有引入 TS 生成器或 zod 运行时依赖。
+- **参数与信封（差异 9、11，二轮补充）**：SRC 方法使用简单标识符参数；`status()` 为零参数，`listProjects(request)` / `getBoard(request)` 恒传一个参数，缺省补 `{}`。网关 direct 返回 `{ok, value}` 信封，需先拆包。
+- **激活顺序（差异 11）**：入口 inject 不得等待自装的 `remote.githubKanban`，否则 apply 无法运行。挂载后通过 scoped `ctx.inject` 捕获该服务。
+- **轮询（差异 10）**：由浏览器控制器驱动，使用客户端 timer 服务；宿主不知道当前选择。页面后台暂停，面板卸载清理定时器。
+- **项目路由（差异 12）**：viewer 与仓库关联项目按 id 合并，优先保留仓库来源；同项目关联多个配置仓库时保留配置靠后的来源。仓库关联不代表仓库拥有该项目。查询 `closed` 后本地过滤，不传 `includeArchived`。
 
-## 差异 2:`key` / `id` / `order` 是三种座位的字段,不能混用
+## 数据与时序约束
 
-- TODO 原话:座位注册用 `{name, id, order, locale, inject}`。
-- 实际:`keyed` 用 `key`(每 key 一格);`list` 用 `id` + `order`(列表项);`single` 两者都不用;`chain` 另用 `select`。写错字段不会报错,只会不派发。
-- 证据:`$G/dsh-client-ui-slots/lib/types/index.d.ts`(`BaseOptions`、`KindOptions`、`StoredEntry.options` 的 `key?/id?/order?`)。
-- 影响:`sidebar.right.pane.tab` 两个座位都用 `key: TAB_ID`;`order` 是 list 座位的事,1.1 没用上。
+- 凭据和指纹在请求入口同时捕获，分页、请求头和脱敏沿用该快照。在途键含身份，旧响应不得覆盖新缓存。
+- 客户端 `epoch` 隔离整链刷新与卸载；`loadSeq` 隔离同链内的项目切换。
+- 看板请求只清自己的错误，不能清除 status/list/bootstrap 失败。
+- 浏览器只持久化选择偏好，旧整板快照已移除。安全边界见 [SECURITY](../SECURITY.md)。
 
-## 差异 3:host → 浏览器调用需要 typert 工件,不只是 `@Remote`
+## 升级核对清单
 
-- TODO 原话:「Remote 服务模式 | `$G/dsh-plugin-manager/lib/index.js` | `@Remote` 装饰器:宿主方法暴露给浏览器调」。
-- 实际:`@Remote('name')` 只是给方法打标记。一个包要把宿主方法暴露到浏览器,需要三件套:
-  1. 宿主半边 `class X extends TypertRemoteService { constructor(ctx){ super(ctx, "schedule") } }` —— 第二个参数就是服务键,**浏览器侧即 `ctx.remote.<服务键>`**;
-  2. 包 `exports["./typert"]` 指向**生成**的 host 面工件(声明 wire 方法/schema),`exports["./remote"]` 指向生成的 remote-client 工件;
-  3. 工件由 `@deepseek-ai/dsh-typert-generator` 从 FaceModel 生成 —— **本机 dsh 安装里没有这个生成器包**(只有 `dsh-typert-loader` / `dsh-typert-protocol` / `dsh-typert-registry`)。
-- 替代路径:`dsh-typert-loader` 头注释明说「Manual `ctx.typert.register()` remains available for contributions that do not use a `./typert` artifact (hand-written wire schemas, tests, non-loader compositions)」—— 也就是**手写 wire schema** 是官方承认的口子。
-- 证据:`$G/dsh-typert-protocol/lib/index.js`(`TypertRemoteService` / `Remote` / `bindTypertRemote`)、`$G/dsh-typert-loader/lib/index.js`(开头注释 + `TYPERT_HOST_EXPORT = "./typert"`)、`$G/dsh-schedule/lib/index.js`(`@Remote('list')` 等)、`$G/dsh-schedule/lib/typert.host.js`(头行「Generated by @deepseek-ai/dsh-typert-generator from FaceModel — do not edit」)、`$G/dsh-schedule/package.json`(`./typert` + `./remote` 两个导出)。
-- 影响:1.1 的宿主半边**刻意不暴露远程面**,只注册服务骨架;1.2 动工前要先选「手写 wire schema」还是「引入生成器」(建议后者若能从 npm 装到,否则前者)。
+在实际安装的 dsh 下查找 `node_modules/@deepseek-ai/`，对照这些包的当前源码：
 
-## 差异 4:`dsh.client.inject`(包名)与插件 `exports.inject`(服务名)是两套 inject
+1. `dsh-client-modules`：模块元数据、script 提供、seed 与 require 解析。
+2. `dsh-client-ui-sidebar` / `dsh-client-ui-layout`：panellist、main 的注册与卸载。
+3. `dsh-typert-protocol` / `dsh-typert-registry`：Remote 标记、绑定与清单结构。
+4. `dsh-api-gateway`：SRC 参数解析、实参数量校验、strict codec 要求、direct 信封与 namespace 激活。
+5. `cordis` / 客户端 timer：provide、effect、scoped inject、timeout/interval 的返回和清理方式。
+6. 更新契约测试中的严格替身，再执行 `npm test` 与 `npm run test:strict`；按 [TODO](../TODO.md) 补真实宿主验收。
 
-- TODO 原话:「依赖在 package.json 的 `dsh.client.inject` 声明,`dsh.client.platform: "web"`」——这句本身对,但容易和浏览器半边导出的 `inject` 混为一谈。
-- 实际:
-  - `package.json` 的 `dsh.client.inject`:**包名**数组。浏览器加载器按它先「到达」依赖包的工厂(`arriveGraphRow` → `for (const packageName of row.inject)`,查不到的行直接忽略),管的是**模块图顺序**。
-  - 浏览器半边导出的 `inject`:**客户端服务名**数组(如 `["slots","locale","sidebarRightTabs"]`),cordis 等这些服务就绪后才 apply 插件。
-- 证据:`$G/dsh-client-modules/lib/index.js`(`parseDshClient` / `resolveMeta` / `arriveGraphRow`)、官方包 `lib/client.js` 末尾的 `exports.inject`。
-- 影响:1.1 两处都写了,含义不同,注释里已分别标明。
+## 历史验证边界
 
-## 差异 5:浏览器半边不打包,相对依赖不可用(适配层必须同文件)
-
-- TODO 原话:「封装一层适配,别把 ModuleLoader/slot 调用散落各处」——要求合理,但没提这个约束。
-- 实际:dsh 把 `exports["./client"]` 的**文件字节**直接组进 combo script(`prepareSource`:只剥 `//# sourceMappingURL`),**不做打包、不做转译**。因此浏览器里的 `require` 只能命中:
-  - 平台 seed 词表:`react`、`react/jsx-runtime`、`react-dom`、`react-dom/client`、`@deepseek-ai/cordis`、`@deepseek-ai/dsh-client-store`、`@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-ui-primitives`、`@deepseek-ai/dsh-client-ui-dockkit`(顺序无关,来自前端 shell 的 `staticModules`);
-  - 已注册工厂的包名(`<pkg>` 与 `<pkg>/client` 归一,`stripClientSuffix`)。
-  - 相对路径 / 自己的子文件:**不可用**。
-- 证据:`$G/dsh-client-modules/lib/index.js`(`prepareSource`、`comboUrl`、`makeRequire` 抛错文案)、`$G/dsh-web-frontend/dist/assets/index-*.js` 的 `staticModules`。
-- 影响:适配层(`createClientAdapter` / `injectPluginStyles`)与组件同处 `lib/client.js`,以分节注释隔离;升级 dsh 只改那一节。
-
-## 差异 6:右栏 tab body 的 props 来自「标准 props 座位」,不必依赖 `ctx.sessions`
-
-- TODO 原话:「客户端服务:`ctx.slots` / `ctx.sessions`(含投影推送,数据变更自动到面板)/ `ctx.uiWorkspace.openSession` / `ctx.locale` / `ctx.effect`」。
-- 实际:`ctx.sessions` 存在,但右栏 tab 组件不吃它:
-  - 座位 scope = `session` → 框架自动给 `sessionId`、`useSession`、`useProjection`(`ui-session` 注入的 `SessionStandardProps`);
-  - 全局座位再给 `useSessions`、`useSessionStatus`、`useSessionRetainInfo`(`GlobalStandardProps`);
-  - keyed 座位的父级还注入 `useTabInfo`(`hooks.tabInfo`)。
-  - 「投影推送」到面板的正路就是这几个座位 hook(投影值由宿主算好、按 key 推给客户端,客户端不做折叠)。
-- 证据:`$G/dsh-client-ui-slots/lib/types/index.d.ts`(`ScopeStandardProps`/`PropsRuntime`)、`$G/dsh-client-ui-session/lib/types/client/index.d.ts`(`GlobalStandardProps`/`SessionStandardProps`)、官方组件 props 实例 `$G/dsh-client-ui-sidebar-files/lib/types/client/FilesBody.d.ts` 与 `$G/dsh-client-ui-deliverables/lib/types/client/ReviewTab.d.ts`(都直接解构 `useTabInfo, sessionId, useSessions`)。
-- 影响:1.1 的 `inject = ["slots","locale","sidebarRightTabs"]` **不含 `sessions`**;面板读数全部走座位 hook,并且对 hook 缺席做了替身降级(自检区会红一条,而不是崩面板)。
-
-## 差异 7:一个包可以同时是 host 插件与 client UI 插件(不必三包三行)
-
-- TODO 原话(目标结构):`cordis.patch.yml # 注册 host 服务 + client UI(参考 agent-team-profile)`。
-- 实际:`dsh-client-modules` 是**按 loader 行**去扫该行包的 `package.json`(近邻 manifest,名字必须匹配)的 `dsh.client` 声明,扫到就把 `exports["./client"]` 提供给浏览器。所以**同一个包一行 insert** 就能同时挂宿主服务与浏览器 UI;agent-team-profile 之所以是三行,是因为它组合了三个独立包。
-- 证据:`$G/dsh-client-modules/lib/index.js`(`locatePkgJson` / `nearestPackage` / `resolveMeta`)、`$G/dsh-experimental-client-ui-agent-team/lib/index.js`(纯浏览器插件的宿主半边就是个空 `apply(){}`,但它**必须**作为 loader 行存在,否则扫不到)。
-- 影响:本仓 `cordis.patch.yml` 只有一行 insert。
-
-## 差异 8(小项,但踩到就白花时间)
-
-- **样式要自带归属**:官方注入 CSS 时给 `<style>` 打 `data-plugin` 与 `data-plugin-css`,框架按插件认领、卸载/HMR 时清理(`$G/dsh-experimental-client-ui-agent-team/lib/client.js` 顶部)。1.1 的 `injectPluginStyles` 照做。
-- **注册 id 必须等于包名**(不是插件显示名):浏览器加载器会校验「bundle 加载完有没有注册这个 id」,写错报 `loaded without registering "..."`。
-- **宿主注册服务用 `ctx.provide(key, value)`**:cordis 4.x 里 `ctx.set` 只允许改**已 provide** 的键,直接 `set` 新键会抛 `cannot set property "x" without provide`(`$G/cordis/lib/index.js` 的 `get/set/provide`)。本地既有插件(thorn-agent 的 dispatch)用的是 `ctx.tools.register`,没有这个坑,容易想当然。
-- **`ctx.effect(callback, label)`** 是持有注册生命周期的正路(官方一致用法),1.1 的字典与 tab 类型都挂它。
-- **tab 类型 id 惯例**:`<包名>/<短名>`(如 `@deepseek-ai/dsh-client-ui-schedule/task`),kind 用 camelCase(如 `scheduleTask`);本插件取 `@local/thorn-github-kanban/board` + `githubKanbanBoard`。
-- **`priority` 默认即 `extension`**:外部插件通常不用显式写。
-
-## 已核对、与 TODO 一致(无差异)的部分
-
-- `window.__ModuleLoader__.load({id, factory})` 的写法、factory 内 `require("react")` / `require("@deepseek-ai/dsh-client-ui-primitives")` 可用。
-- `ctx.slots.inject(座位名, () => ctx.slots.register({...}, 组件))` 的挂载形式。
-- `package.json` 需要 `dsh.client.platform: "web"` 与 `exports["./client"]`;`dsh.bundle.patch` 指向 `cordis.patch.yml`。
-- `cordis.patch.yml` 用 `insert:` 列表挂包,`config:` 段会作为 `apply(ctx, config)` 的第二参传入。
-- `ctx.locale.register(ns, {zh, en})` + `ctx.locale.bind(ns)`、`ctx.effect` 的用法。
-- 官方参考包**零改动**:1.1 全程只读。
-
-## Phase 1.1 自检结果(静态,零依赖)
-
-```
-$ node scripts/smoke-load.mjs
-...
-31/31 通过
-```
-
-覆盖:包声明 → 注册阶段零副作用 → factory 物化(样式归属)→ `apply(ctx)` 注册 1 tab 类型 + 2 keyed 座位 → 宿主半边服务骨架 → body 在两份不同投影快照下读数不同。
-
-**它证不了什么**(留给 Phase 1.4 真机):
-- dsh web 右栏真的多出 tab、座位真的被派发(需要装进 `~/.dsh/profiles/web` 并重启);
-- 真实 React 渲染、布局与视觉(自检里的 React 是替身,只跑组件函数与元素树);
-- HMR / 卸载时的样式回收。
-
-## 差异 9(Phase 1.2 实测):宿主→浏览器远程面的落地路线 —— 手写 wire 面 + SRC 回退,零新增依赖
-
-- 背景:差异 3 留了两条路 —— 引入 `dsh-typert-generator` 生成工件,或手写 wire schema。1.2 动工前实测如下。
-- **实测 1:生成器装得到,但用不了。** `npm view @deepseek-ai/dsh-typert-generator` 返回 `0.0.1-rc.1`(npm 缓存目录有 root 属主文件,需 `--cache` 指到可写目录)。装上后读其 README:它是 **monorepo 的 TypeScript 工程分析器**(`WorkspaceAnalyzer` 以 `tsconfig.host.json`/`tsconfig.client.json` 为种子,产出 FaceModel,再 emit zod 工件)。本包是纯 JS 零构建,为生成工件引入整条 TS 构建链 + `zod` 运行时依赖,与「零新增依赖」目标冲突,放弃。
-- **实测 2:gateway 有官方 SRC 回退,宿主侧可以不注册 strict 描述符。** `dsh-api-gateway/lib/index.js` 的 `resolveDescriptor`:strict 定义(`ctx.typert.local.get`)查不到时走 `resolveSrcDescriptor` —— 从 `ctx.reflect.props` 里找带 `typertRemote` 绑定的服务,用 `@Remote` 原型标记 + `Function.prototype.toString` 解析方法参数名,现场生成 `src-json` 编解码的描述符(只做 JSON 安全校验,不调 zod)。**该回退无任何 gating**(没有配置开关),是插件的一等公民路径。
-- **实测 3:浏览器侧的 remote 面由 `ctx.remote.$mount(contribution)` 装。** `dsh-api-remotes/lib/client.js` 对核心包就是 `$mount(内联的 TYPERT_REMOTE 清单)`;`dsh-api-gateway/lib/client.js` 的 `validateContribution` 对每个 descriptor 要求 strict 编解码(`requireStrictInputs`),但**客户端从不调用 `codec.create()`**(全文无 `codec.create` 调用点),只检查 `mode === "strict"`。于是手写清单可以用无害透传占位,不需要 zod。
-- **落地(本仓 lib/index.js + lib/client.js)**:
-  - 宿主:`GithubKanbanService` 类实例经 `ctx.provide("githubKanban", …)` 注册(cordis `reflect.provide` 即 `type:"service"`,SRC 扫描可见);实例带冻结的 `typertRemote = { service, serviceKey, namespace }`(与 `bindTypertRemote` 逐字段一致),原型上挂 v1 版 Remote 方法标记(键字符串 `@deepseek-ai/dsh-typert-protocol/remote-methods`,与 protocol 源码常量一致)。三个方法 `status / listProjects / getBoard(request)` 都是简单标识符参数的原型方法。
-  - 浏览器:apply 时 `await ctx.remote.$mount({ package, descriptors })`,descriptor 形状对照 `dsh-typert-registry` 的 `validateInvocation`(id/service/namespace/method/invocation/parameters/result);result 是编码本体 `{mode:"strict", typeSymbol, create}`(注意:**result 直接是 codec**,参数才是 `{name, wire, source, codec}`)。
-- **风险与升级核对**:v1 标记描述符与绑定形状是 protocol 内部 wire 契约,dsh 升级时对照 `$G/dsh-typert-protocol/lib/index.js`(`REMOTE_METHOD_DESCRIPTOR`、`mark()`、`bindTypertRemote`)与 `$G/dsh-api-gateway/lib/index.js`(`resolveSrcDescriptor`)。若未来 SRC 回退被收紧,再补手写 strict 描述符(需引入 zod,dsh 运行时自带 zod 4.4.3)。
-- 附:npm 缓存 EPERM(`~/.npm/_cacache` root 属主)会波及一切 npm 命令,`npm install` 会静默**向上找到最近的 package.json 落包**(probe 目录 npm init 失败时包装进了本仓根目录,已回滚)——以后探测一律用 `$TMPDIR` 下的独立目录。
-
-## Phase 1.2 自检结果(静态,零依赖,真实网络不进自检)
-
-```
-$ node scripts/smoke-load.mjs
-58/58 通过
-```
-
-新增覆盖:远程清单(3 direct 方法 + strict 占位编解码)、宿主 SRC 面(typertRemote 绑定 + v1 标记)、token 红线(缺失路径结构化错误不抛堆栈、token 只进 Authorization 头、错误文案抹除 token 值、仓库无旧变量名残留)、字段映射(列序 = Status 选项序、空列保留、兜底列、卡片三要素)、面板数据流(mini React 替身按 React 语义驱动真实异步链:token 引导 / 项目切换重拉 / 分列渲染 / 错误态无堆栈)。
-
-## 差异 10(Phase 1.3,补记):轮询在浏览器半边
-
-宿主无从得知浏览器当前选中的项目,轮询只能由浏览器半边发起;定时用 client runner 内建的 timer Service(插件 inject: ["timer"],ctx.interval 同 API),零新增依赖。决策细节见 lib/index.js 头注。(补记于 2026-10-01:当时漏写本节,索引里引用了差异 10。)
-
-## 差异 11(2026-10-01 真机/rc.2 实测):死锁、token 链路、网关信封 —— 三个「静态自检查不到」的坑
-
-dsh 0.2.0-rc.2 下首次真机跑到数据链路,连修四个问题(commit 668b906 / 1f56b3c / 1edecb5 / e1ddedf):
-
-1. **入口 inject 含自装服务全名 = 激活死锁。** `remote.githubKanban` 由本插件 apply 里的 `$mount` 自装,而入口激活会先等 inject 清单里的服务 → apply 永不运行 → 浏览器端 pending "waiting for service: remote.githubKanban"。官方插件敢写 `inject: ["remote","remote.productAnalytics"]` 是因为其描述符由核心包开机 $mount,不存在自装。修复:入口 inject 去全名;取面改走 apply 里 `ctx.inject(["remote","remote.githubKanban"], …)` 的 scoped fiber,等自装服务激活后捕获面(gateway `installNamespace` 的文档明确支持插件 parked on the namespace service,且保证无可见性缺口)。
-2. **生产 token 链路断在依赖注入。** apply() 建服务是空 deps,而 status/listProjectsImpl/getBoardImpl 全读 `this.deps.env` → 生产永远「未配置」(apply 的激活日志却按 process.env 报「已配置」,两头口径不一)。修复:`deps.env` 缺省回退 `process.env`(ghGraphQL 单点 + status)。
-3. **网关 direct 调用回信封 `{ok, value}`,业务结果在 value 里。** 官方插件不消费 direct 返回值(product-analytics 只 fire-and-forget),信封没人拆;本包业务结果恰好也带 ok 字段,透传后组件读 `status.status` = undefined → token 引导分支恒显。修复:按 value 键存在与否拆包(本包业务结果从不带 value 键)。
-4. **QUERY_PROJECTS 的 `includeArchived` 参数真 API 不接受**(Field 'projectsV2' doesn't accept argument 'includeArchived'),Phase 1.2 写查询时想当然,首次打真 API 即暴露;删参,归档过滤交 UI 层。
-
-经验:静态自检(替身 React/ctx)只能验契约形状,验不出激活先后序、环境传递与服务端真实 schema;真机首验后每一层失败都被上一层修复「揭开」,四修三重启才见真实数据。调试利器:页面内 `performance.getEntriesByType('resource')` 找到 RPC 端点,再给 `window.fetch` 打补丁捕获响应体,比猜快。
-
-## 差异 12(2026-10-01,0.4.0 三仓集成):仓库级项目的查询与路由要点
-
-- **repository.projectsV2 = link 到该仓的项目**(Projects v2 没有真正的「仓库所有」项目,owner 永远是 user/org)。`repository(owner,name).projectV2(number: N)` 能解析 link 进来的用户级项目(探针实测),org 项目则**只有**这条路(viewer.projectV2 按 owner 域查号,查不到 org 项目)。
-- 合并策略:viewer 用户级 + 逐仓 link 项目,按项目 id 去重,**保留带仓归属的版本**(切换器可显来源,且路由统一走仓路径)。仓库缺席(repository 为 null,配置错/无权限)跳过该仓,不拖垮整板 —— 与 shape_error 严格区分。
-- closed 过滤:projectsV2 连接没有 includeArchived/closed 参数(schema 不收),查 `closed` 字段在实现层过滤。
-- 配置进 `cordis.patch.yml` 的 insert 行 `config.repos`(owner/name 数组,形状校验、坏条目跳过);token 仍只走环境变量,配置面永不沾凭据。
-
-## 0.5.0 提速(2026-10-01):缓存分层与实测数字
-
-- 实测(本机,三仓配置):冷开 RPC = status 14ms + listProjects 1393ms(并行后单往返窗)+ getBoard 845ms;重开面板切换器 ~1s 出现(纯面板挂载开销,数据瞬时),status/list 走宿主缓存 10-15ms,getBoard 视 TTL(15s)真拉或命中。剩余的 ~1s 面板挂载是 dsh 主座位 remount 的固有成本,非数据链路。
-- 分层:宿主进程内 TTL 缓存(projects 60s / board 15s,**board TTL 刻意 < 轮询 30s** 保证轮询永远真拉)+ in-flight 去重;浏览器 localStorage 快照(`snapshot/v1` 键,乐观首屏 + 选中延续 + 成功写回;无 localStorage/隐私模式全静默降级);刷新按钮 noCache 绕缓存回填。
-- 红线不变:token 只在宿主进程,快照只含看板业务数据(公开元数据)。
-
-## 升级 dsh 时的核对清单
-
-1. `$G/dsh-client-ui-sidebar-right/lib/types/client/contract/slots.d.ts` 与 `tab-registry.d.ts`(座位 kind/key 与 tab 定义字段)。
-2. `$G/dsh-client-modules/lib/index.js`(dsh.client 扫描、combo 提供、seed 词)。
-3. `$G/dsh-client-ui-session/lib/types/client/index.d.ts`(标准 props 名字)。
-4. `$G/dsh-typert-loader/lib/index.js` + `$G/dsh-typert-protocol/lib/index.js`(远程面路线)+ `$G/dsh-api-gateway/lib/client.js`(direct 调用信封 {ok,value}、installNamespace 的 parked-on-namespace 语义)。
-5. `$G/cordis/lib/index.js`(Service provide/set/effect、运行时 `ctx.inject(deps, cb)` scoped fiber、ReflectService get trap 按调用 fiber 查全名)。
+2026-10-01 的 rc.2 联调修复了激活死锁、环境回退、信封拆包和无效查询参数，并读到项目列表；当时项目无卡，不能证明卡片与 GitHub 一致。旧性能数字及右栏探索过程保留在 Git 历史中，不作为当前验收结论。

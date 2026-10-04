@@ -46,7 +46,7 @@ test("S3.4 偏好:有效的持久化选择被延续(初拉偏好项目),写回�
   assert.deepEqual(boardCalls.map((call) => call.projectNumber), [9], "初拉偏好选中的 #9");
   assert.ok(panel.text().includes("BetaColumn"), "渲染 #9 的看板");
   const stored = JSON.parse(panel.dom.window.localStorage.getItem(PREFS_KEY));
-  assert.deepEqual(Object.keys(stored).sort(), ["savedAt", "selectedKey"], "只持久化选择键,不含任何业务数据");
+  assert.deepEqual(Object.keys(stored).sort(), ["savedAt", "selectedKey"], "主题恒跟随 dsh 不落盘(0.9.0 末移除手动切换);仍不含任何业务数据");
   assert.equal(stored.selectedKey, "#9");
   await panel.unmount();
 });
@@ -188,4 +188,59 @@ test("S3.4 StrictMode:effect 双调用(cleanup 真实执行)后最终状态一�
   assert.equal(intervals.length, 1, `轮询注册恰好 1 个:${JSON.stringify(intervals)}`);
   await panel.unmount();
   assert.ok(!panel.clock.pending().some((task) => task.kind === "interval"), "卸载后全部收口");
+});
+
+// ── 0.9.0 主题:恒跟随 dsh 宿主(MutationObserver 实时联动),无手动切换 ──────────
+// jsdom 无 dsh 标记、无 matchMedia、背景全透明 → 兜底链落到暗色;
+// 需要「亮色生效」的用例用 domStubs 注入 matchMedia 假返回或 dsh 宿主标记属性。
+
+test("0.9.0 主题实时联动:dsh 切换深浅色(body[data-ds-dark-theme])面板即时跟随,主题不落盘", async () => {
+  const { face } = makeFace();
+  const panel = await mountPanel({
+    face,
+    domStubs: (dom) => {
+      dom.window.document.body.setAttribute("data-ds-dark-theme", ""); // dsh 暗色标记(真机 2026-10-03 核实)
+      dom.window.matchMedia = (query) => ({ media: query, matches: false }); // 移除标记后的兜底链会说亮色
+    },
+  });
+  const root = () => panel.$(".tgk-root");
+  assert.equal(root().getAttribute("data-tgk-theme"), "dark", "初始:dsh 暗标记在场 → 生效暗色");
+  assert.equal(panel.$$(".tgk-themeToggle").length, 0, "手动主题切换按钮已移除(恒跟随 dsh)");
+
+  panel.dom.window.document.body.removeAttribute("data-ds-dark-theme"); // 宿主切浅色
+  await panel.settle(3); // observer 回调经微任务合并后派发
+  assert.equal(root().getAttribute("data-tgk-theme"), "light", "MutationObserver 联动:面板即时跟随变亮");
+
+  panel.dom.window.document.body.setAttribute("data-ds-dark-theme", "");
+  await panel.settle(3);
+  assert.equal(root().getAttribute("data-tgk-theme"), "dark", "切回暗色同样跟随");
+  assert.ok(!panel.text().includes("读取失败"), "主题联动不扰动数据链");
+  await panel.unmount();
+});
+
+test("0.9.0 主题默认检测:dsh 标记体系优先(暗标记压过一切),旧式 data-theme 线索次之,全无线索兜底暗色", async () => {
+  const { face } = makeFace();
+  const dshDarkPanel = await mountPanel({
+    face,
+    domStubs: (dom) => {
+      dom.window.matchMedia = (query) => ({ media: query, matches: false }); // 系统偏好亮色
+      dom.window.document.body.setAttribute("data-ds-dark-theme", ""); // dsh 说暗色
+    },
+  });
+  assert.equal(dshDarkPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "dark", "dsh 暗标记优先于系统偏好");
+  await dshDarkPanel.unmount();
+
+  const hostLightPanel = await mountPanel({
+    face,
+    domStubs: (dom) => {
+      dom.window.matchMedia = (query) => ({ media: query, matches: true }); // 系统偏好暗色
+      dom.window.document.documentElement.setAttribute("data-theme", "light"); // 旧式宿主线索说亮色
+    },
+  });
+  assert.equal(hostLightPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "light", "宿主线索(亮)压过系统偏好(暗)");
+  await hostLightPanel.unmount();
+
+  const fallbackPanel = await mountPanel({ face }); // jsdom:无线索、无 matchMedia → 兜底
+  assert.equal(fallbackPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "dark", "兜底暗色");
+  await fallbackPanel.unmount();
 });

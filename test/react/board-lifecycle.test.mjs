@@ -70,13 +70,17 @@ test("S3.4 服务缺席:ctx.remote 缺失时面板给出错误而非挂死(可�
 
 // ── 正常渲染与两项目切换(验收矩阵「有卡项目与至少两个项目切换」行的替身侧) ──
 
-test("S3.4 正常渲染:两个项目可选,列/卡/负责人/标签/计数与数据一致", async () => {
+test("S3.4 正常渲染:两个项目可选,列/卡/负责人头像/标签/计数与数据一致", async () => {
   const board7 = boardResult({
     number: 7,
     title: "Alpha",
     columns: [
       column({ name: "Todo", optionId: "o1", items: [card({ id: "a1", title: "待办卡" })] }),
-      column({ name: "In Progress", optionId: "o2", items: [card({ id: "a2", title: "进行中的卡", assignees: ["octocat"], labels: [{ name: "P1", color: "ff8800" }] })] }),
+      column({
+        name: "In Progress",
+        optionId: "o2",
+        items: [card({ id: "a2", title: "进行中的卡", assignees: [{ login: "octocat", avatarUrl: "https://example.com/octocat.png" }], labels: [{ name: "P1", color: "ff8800" }] })],
+      }),
       column({ name: "Done", optionId: "o3", items: [] }),
     ],
     totalCount: 2,
@@ -101,7 +105,12 @@ test("S3.4 正常渲染:两个项目可选,列/卡/负责人/标签/计数与数
   const columnNames = panel.$$(".tgk-column").map((element) => element.getAttribute("aria-label"));
   assert.deepEqual(columnNames, ["Todo", "In Progress", "Done"], "列序 = Status 选项序");
   assert.ok(text.includes("空"), "空列标注「空」");
-  assert.ok(text.includes("@octocat") && text.includes("P1"), "负责人与标签渲染");
+  // 0.9.0:负责人渲染为 20px 圆形头像(img,alt=login,loading lazy),不再是 @login 文本
+  const avatar = panel.$('img.tgk-avatar[alt="octocat"]');
+  assert.ok(avatar !== null, "负责人头像 img 在场");
+  assert.equal(avatar.getAttribute("loading"), "lazy", "头像 lazy 加载");
+  assert.equal(avatar.getAttribute("src"), "https://example.com/octocat.png");
+  assert.ok(text.includes("P1"), "标签 pill 渲染");
   assert.ok(text.includes("共 2 张卡"), "计数 = 服务端总数口径");
   assert.deepEqual(boardCalls.map((call) => call.projectNumber), [7], "初拉默认项目");
 
@@ -513,5 +522,293 @@ test("R3 保留路径:board 级错误期的轮询成功仍恢复看板(不因门
   await panel.advance(30_000); // 轮询 tick:看板成功 → 恢复(审查确认的合法路径,必须保留)
   const recovered = panel.text();
   assert.ok(recovered.includes("AlphaColumn") && !recovered.includes("读取失败"), "board 级错误被轮询成功恢复");
+  await panel.unmount();
+});
+
+// ── 0.9.0 拖拽写回(HTML5 DnD):乐观移动 / 回滚 / 指引 / pending 守卫 ──────────
+// 事件驱动路径:dragstart 记卡片身份(client 内部 dragRef),dragover 高亮目标列,
+// drop 触发 controller.requestMove → moveCard(恰好 1 实参)。jsdom 没有 DataTransfer,
+// 用例按规格建议 Object.defineProperty(event, "dataTransfer", …) 打桩 —— 同时证明
+// 写回逻辑不依赖 dataTransfer 的可读写性。
+
+const fireDragEvent = async (panel, element, type, dataTransfer) => {
+  await panel.act(async () => {
+    const event = new panel.dom.window.Event(type, { bubbles: true, cancelable: true });
+    if (dataTransfer !== undefined) Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+    element.dispatchEvent(event);
+  });
+};
+
+/** 两列看板(o1 Todo 有卡 a1/o2 Done 空)+ moveCard 替身的公共面。 */
+const makeDragWorld = (moveCardImpl) => {
+  const board = boardResult({
+    number: 7,
+    title: "Alpha",
+    columns: [
+      column({ name: "Todo", optionId: "o1", items: [card({ id: "a1", title: "拖拽卡" }), card({ id: "a2", title: "留原地" })] }),
+      column({ name: "Done", optionId: "o2", items: [] }),
+    ],
+    totalCount: 2,
+  });
+  const moveCalls = [];
+  const face = {
+    status: async () => gatewayOk(statusResult()),
+    listProjects: async () => gatewayOk(projectsResult([{ id: "p7", number: 7, title: "Alpha" }])),
+    getBoard: async () => gatewayOk(board),
+    moveCard: async (request) => moveCardImpl(request, moveCalls),
+  };
+  return { board, face, moveCalls };
+};
+
+test("0.9.0 拖拽成功:dragover 高亮 → drop 乐观上板 → moveCard 恰好 1 实参且请求逐字段", async () => {
+  const { face, moveCalls } = makeDragWorld((request, calls) => {
+    calls.push(request);
+    return gatewayOk({ ok: true });
+  });
+  const panel = await mountPanel({ face });
+  assert.ok(panel.text().includes("Todo") && panel.text().includes("Done"), "两列就绪");
+  const [sourceColumn, targetColumn] = panel.$$(".tgk-column");
+  const dragCard = panel.$$(".tgk-card")[0]; // fixture 序:第一张卡即 a1
+  assert.ok(dragCard !== undefined, "源卡在场");
+  assert.equal(dragCard.getAttribute("draggable"), "true", "卡片可拖");
+
+  const transfer = { setDataCalls: [] };
+  transfer.setData = (kind, value) => transfer.setDataCalls.push([kind, value]);
+  await fireDragEvent(panel, dragCard, "dragstart", transfer);
+  await fireDragEvent(panel, targetColumn, "dragover");
+  assert.equal(targetColumn.className.includes("tgk-columnDrop"), true, "dragover 后目标列高亮");
+
+  await fireDragEvent(panel, targetColumn, "drop", transfer);
+  await panel.settle();
+  assert.equal(targetColumn.className.includes("tgk-columnDrop"), false, "drop 后高亮清除");
+  assert.equal(panel.$$(".tgk-column")[1].textContent.includes("拖拽卡"), true, "乐观上板:卡已在目标列");
+  assert.equal(panel.$$(".tgk-column")[0].textContent.includes("拖拽卡"), false, "源列移除该卡");
+  assert.equal(panel.text().includes("移动失败"), false, "成功路径无错误行");
+  assert.equal(moveCalls.length, 1, "moveCard 恰好发一次");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(moveCalls[0])),
+    { projectNumber: 7, itemId: "a1", optionId: "o2" },
+    "请求形状:user 级项目不带 repo,itemId = 卡 id,optionId = 目标列",
+  );
+  assert.deepEqual(transfer.setDataCalls, [["text/plain", "a1"]], "dataTransfer.setData 被正常调用(DnD 礼仪)");
+  await panel.unmount();
+});
+
+test("0.9.0 拖拽失败(forbidden):回滚到拖拽前看板 + 内联错误给「写权限」指引", async () => {
+  const { face } = makeDragWorld(async () => gatewayOk({ ok: false, error: { code: "forbidden", message: "403 无项目写权限" } }));
+  const panel = await mountPanel({ face });
+  const [sourceColumn, targetColumn] = panel.$$(".tgk-column");
+  const dragCard = panel.$$(".tgk-card")[0];
+
+  await fireDragEvent(panel, dragCard, "dragstart");
+  await fireDragEvent(panel, targetColumn, "drop");
+  await panel.settle();
+  const text = panel.text();
+  assert.equal(panel.$$(".tgk-column")[0].textContent.includes("拖拽卡"), true, "失败后回滚:卡回到源列");
+  assert.equal(panel.$$(".tgk-column")[1].textContent.includes("拖拽卡"), false, "失败后回滚:目标列无卡");
+  assert.ok(text.includes("移动失败") && text.includes("403 无项目写权限") && text.includes("已还原"), `内联错误交代结果:${text.match(/移动失败[^。]{0,60}/)?.[0] ?? ""}`);
+  assert.ok(text.includes("写权限"), "forbidden 给「检查 token 写权限」指引");
+  await panel.unmount();
+});
+
+test("0.9.0 拖拽失败(timeout):回滚且指引改为「稍后再试」;新的移动发起即清上一次失败", async () => {
+  const { face } = makeDragWorld((request, calls) => {
+    calls.push(request);
+    return calls.length === 1
+      ? gatewayOk({ ok: false, error: { code: "timeout", message: "写回超过 20000ms 未返回" } })
+      : gatewayOk({ ok: true });
+  });
+  const panel = await mountPanel({ face });
+  let [sourceColumn, targetColumn] = panel.$$(".tgk-column");
+  await fireDragEvent(panel, panel.$$(".tgk-card")[0], "dragstart");
+  await fireDragEvent(panel, targetColumn, "drop");
+  await panel.settle();
+  let text = panel.text();
+  assert.ok(text.includes("已还原") && text.includes("稍后再试"), `timeout 指引:${text.match(/移动失败[^。]{0,70}/)?.[0] ?? ""}`);
+
+  // 第二次移动(moveCard 本次成功):MOVE_START 清旧错误,MOVE_OK 后无错误行
+  ;[sourceColumn, targetColumn] = panel.$$(".tgk-column");
+  await fireDragEvent(panel, panel.$$(".tgk-card")[0], "dragstart");
+  await fireDragEvent(panel, targetColumn, "drop");
+  await panel.settle();
+  text = panel.text();
+  assert.ok(!text.includes("移动失败"), "成功后无错误行残留");
+  assert.equal(panel.$$(".tgk-column")[1].textContent.includes("拖拽卡"), true, "第二次移动乐观上板");
+  await panel.unmount();
+});
+
+test("0.9.0 pending 守卫:快速双拖只发一次 moveCard;写回在途不触轮询也不误超时;成功后轮询恢复", async () => {
+  let releaseMove;
+  const gate = new Promise((resolve) => {
+    releaseMove = resolve;
+  });
+  const boardCalls = [];
+  const { face, moveCalls } = makeDragWorld(() => {
+    moveCalls.push(1);
+    return gate.then(() => gatewayOk({ ok: true }));
+  });
+  const gatedFace = {
+    ...face,
+    getBoard: async (request) => {
+      boardCalls.push(request);
+      return face.getBoard(request);
+    },
+  };
+  const panel = await mountPanel({ face: gatedFace });
+  assert.equal(boardCalls.length, 1, "初拉一次");
+  const [sourceColumn, targetColumn] = panel.$$(".tgk-column");
+
+  await fireDragEvent(panel, panel.$$(".tgk-card")[0], "dragstart");
+  await fireDragEvent(panel, targetColumn, "drop");
+  await panel.settle(2);
+  assert.equal(moveCalls.length, 1, "第一次拖拽已发出 moveCard(在途)");
+
+  // 快速双拖:pending 在场,第二次 drop 被忽略
+  await fireDragEvent(panel, panel.$$(".tgk-card")[0], "dragstart");
+  await fireDragEvent(panel, targetColumn, "drop");
+  await panel.settle(2);
+  assert.equal(moveCalls.length, 1, "第二次拖拽被 pending 守卫忽略");
+
+  // 推进 19.5s:轮询 tick(30s)与 moveCard deadline(20s)都未到期 —— 无任何新请求、
+  // 无虚假失败(真正的「pending 期间轮询跳过」语义由 pure.test 的手动 tick 用例钉住,
+  // 这里受 20s deadline 与 30s 轮询的相对位置约束,React 侧验证窗口内的平静)。
+  await panel.advance(19_500);
+  await panel.settle(2);
+  assert.equal(boardCalls.length, 1, "轮询未到期,无新请求");
+  assert.equal(moveCalls.length, 1, "deadline 未误触发(乐观态仍在途)");
+  assert.ok(!panel.text().includes("移动失败"), "在途期间无虚假错误");
+
+  releaseMove(); // 写回成功
+  await panel.settle();
+  assert.equal(panel.$$(".tgk-column")[1].textContent.includes("拖拽卡"), true, "乐观态维持");
+  await panel.advance(30_000); // 下一轮轮询恢复(此时 pending 已清)
+  await panel.settle(2);
+  assert.equal(boardCalls.length, 2, "移动 settle 后轮询恢复");
+  await panel.unmount();
+});
+
+test("0.9.0 reload 仍可用:pending 被权威事件作废,迟到的 moveCard 结果不得回滚权威看板", async () => {
+  let releaseMove;
+  const gate = new Promise((resolve) => {
+    releaseMove = resolve;
+  });
+  const authoritative = boardResult({
+    number: 7,
+    title: "Alpha",
+    columns: [
+      column({ name: "Todo", optionId: "o1", items: [card({ id: "a1", title: "刷新后权威卡" })] }),
+      column({ name: "Done", optionId: "o2", items: [] }),
+    ],
+    totalCount: 1,
+  });
+  let boardMode = "initial";
+  const { face } = makeDragWorld(() => gate.then(() => gatewayOk({ ok: true })));
+  const panel = await mountPanel({
+    face: {
+      ...face,
+      getBoard: async () => {
+        if (boardMode === "initial") return face.getBoard();
+        return gatewayOk(authoritative);
+      },
+    },
+  });
+  const [sourceColumn, targetColumn] = panel.$$(".tgk-column");
+  await fireDragEvent(panel, panel.$$(".tgk-card")[0], "dragstart");
+  await fireDragEvent(panel, targetColumn, "drop");
+  await panel.settle(2);
+  assert.ok(panel.$$(".tgk-column")[1].textContent.includes("拖拽卡"), "乐观移动在途");
+
+  boardMode = "reload";
+  await panel.fireClick(panel.reloadButton()); // 手动刷新:整链重拉(权威链)
+  await panel.settle();
+  assert.ok(panel.text().includes("刷新后权威卡"), "reload 完成即权威态上屏");
+
+  releaseMove(); // 迟到的 moveCard 成功结果到达
+  await panel.settle(4);
+  const text = panel.text();
+  assert.ok(text.includes("刷新后权威卡"), "迟到的写回结果不回滚权威看板");
+  assert.ok(!text.includes("移动失败"), "不作废路径也不产生虚假错误");
+  await panel.unmount();
+});
+
+test("0.9.0 不可拖卡片:fallback 列/无 Status 字段时 draggable 缺席 + title 提示原因;同列 drop 不写回", async () => {
+  const board = boardResult({
+    number: 7,
+    title: "Alpha",
+    hasStatusField: true,
+    columns: [
+      column({ name: "Todo", optionId: "o1", items: [card({ id: "a1", title: "正常列卡" })] }),
+      column({ name: "", optionId: null, fallback: "unfiled", items: [card({ id: "a9", title: "未分列卡", optionId: null })] }),
+    ],
+    totalCount: 2,
+  });
+  const moveCalls = [];
+  const panel = await mountPanel({
+    face: {
+      status: async () => gatewayOk(statusResult()),
+      listProjects: async () => gatewayOk(projectsResult([{ id: "p7", number: 7, title: "Alpha" }])),
+      getBoard: async () => gatewayOk(board),
+      moveCard: async (request) => {
+        moveCalls.push(request);
+        return gatewayOk({ ok: true });
+      },
+    },
+  });
+  const columns = panel.$$(".tgk-column");
+  const fallbackCard = columns[1].querySelector(".tgk-card") ?? panel.$$(".tgk-card")[1];
+  assert.equal(fallbackCard.getAttribute("draggable"), null, "兜底列卡片不可拖");
+  assert.ok((fallbackCard.getAttribute("title") ?? "").includes("兜底列"), `title 提示原因:${fallbackCard.getAttribute("title")}`);
+
+  // 无 Status 字段的看板:所有卡不可拖(词典给原因)
+  const noStatusPanel = await mountPanel({
+    face: {
+      status: async () => gatewayOk(statusResult()),
+      listProjects: async () => gatewayOk(projectsResult([{ id: "p9", number: 9, title: "Beta" }])),
+      getBoard: async () => gatewayOk(boardResult({ number: 9, title: "Beta", hasStatusField: false, columns: [column({ name: "全部", optionId: null, fallback: "all", items: [card({ id: "b1", title: "全部列卡", optionId: null })] })], totalCount: 1 })),
+      moveCard: async (request) => {
+        moveCalls.push(request);
+        return gatewayOk({ ok: true });
+      },
+    },
+  });
+  const noStatusCard = noStatusPanel.$$(".tgk-card")[0];
+  assert.equal(noStatusCard.getAttribute("draggable"), null, "无 Status 字段卡片不可拖");
+  assert.ok((noStatusCard.getAttribute("title") ?? "").includes("Status 字段"), `title 提示原因:${noStatusCard.getAttribute("title")}`);
+  await noStatusPanel.unmount();
+
+  // 同列 drop:不触发写回(列内排序不支持)
+  await fireDragEvent(panel, panel.$$(".tgk-card")[0], "dragstart");
+  await fireDragEvent(panel, columns[0], "drop");
+  await panel.settle();
+  assert.equal(moveCalls.length, 0, "同列 drop 不发 moveCard");
+  assert.ok(panel.$$(".tgk-column")[0].textContent.includes("正常列卡"), "看板无变化");
+  await panel.unmount();
+});
+
+test("0.9.0 列头色点:宿主列 color 枚举映射 hex(缺席列灰)", async () => {
+  const board = boardResult({
+    number: 7,
+    title: "Alpha",
+    columns: [
+      { optionId: "o1", color: "BLUE", name: "Todo", items: [card({ id: "a1", title: "卡" })] },
+      { optionId: null, color: null, name: "", fallback: "unfiled", items: [card({ id: "a2", title: "未分列卡", optionId: null })] },
+    ],
+  });
+  // jsdom 无 matchMedia/可判定背景 → 兜底落到暗色;这里用宿主线索 data-theme=light
+  // (检测链最优先)让色值断言确定落在 light 分支。
+  const panel = await mountPanel({
+    domStubs: (dom) => {
+      dom.window.document.documentElement.setAttribute("data-theme", "light");
+    },
+    face: {
+      status: async () => gatewayOk(statusResult()),
+      listProjects: async () => gatewayOk(projectsResult([{ id: "p7", number: 7, title: "Alpha" }])),
+      getBoard: async () => gatewayOk(board),
+    },
+  });
+  const dots = panel.$$(".tgk-columnDot");
+  assert.equal(dots.length, 2, "每列一个色点");
+  assert.equal(dots[0].style.background, "rgb(9, 105, 218)", `BLUE → light 主题 hex(#0969da):${dots[0].style.background}`);
+  assert.equal(dots[1].style.background, "rgb(110, 119, 129)", `缺席 color 回退灰(#6e7781):${dots[1].style.background}`);
   await panel.unmount();
 });

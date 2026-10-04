@@ -54,7 +54,7 @@ const makeLocale = () => {
  *   text, $, button, select, fireChange, fireClick, unmount, calls }
  */
 export async function mountPanel(options = {}) {
-  const { face, decorateCtx, strictMode = false, seedStorage } = options;
+  const { face, decorateCtx, strictMode = false, seedStorage, domStubs } = options;
   const dom = new JSDOM(`<!doctype html><html><body><div id="tgk-host"></div></body></html>`, {
     url: "https://dsh-panel.test/",
     pretendToBeVisual: true,
@@ -62,6 +62,10 @@ export async function mountPanel(options = {}) {
   if (seedStorage !== undefined) {
     for (const [key, value] of Object.entries(seedStorage)) dom.window.localStorage.setItem(key, value);
   }
+  // 主题检测桩(0.9.0):默认主题链会读 window.matchMedia / html 的 data-theme /
+  // getComputedStyle —— 测试可在这里覆盖(matchMedia 假返回、宿主主题属性等)。
+  // 必须在组件渲染前生效,故在 JSDOM 创建后立即应用。
+  if (typeof domStubs === "function") domStubs(dom);
   // react-dom 事件系统与部分 DOM 探测读全局:与 RTL 同型地指到当前 jsdom 实例。
   // node --test 每个文件独立进程,重复赋值无跨用例污染。(navigator 在 Node 21+
   // 是只读全局,需 defineProperty 覆盖。)
