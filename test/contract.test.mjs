@@ -155,7 +155,11 @@ test("S3.5 挂载:远程清单 3 个 direct 方法,strict 编解码满足 regist
     assert.equal(typeof descriptor.result.typeSymbol, "string");
     assert.equal(typeof descriptor.result.create, "function");
   }
-  assert.deepEqual(contribution.descriptors.map((descriptor) => descriptor.method).join(",").split(","), ["status", "listProjects", "getBoard"]);
+  assert.deepEqual(
+    contribution.descriptors.map((descriptor) => descriptor.method).join(",").split(","),
+    ["status", "listProjects", "getBoard", "moveCard"],
+    "4 个 direct 方法(0.9.0 起 moveCard 拖拽写回上清单)",
+  );
 });
 
 test("S3.5 挂载:取面走 scoped fiber(双名 inject,恰好一次)", async () => {
@@ -272,6 +276,109 @@ test("S3.5 参数数量:数量替身与真网关同严 —— boardApi 的全部
   assert.equal(board.ok, true);
 });
 
+// ── moveCard(0.9.0 拖拽写回):恰好 1 实参 + 信封/错误路径 ────────────────────
+
+test("S3.5 moveCard:严格面(1 参闸)下 boardApi.moveCard 以恰好 1 实参到达;业务/载波失败原样透传", async () => {
+  const seen = [];
+  const face = strictArgumentFace({
+    moveCard: async (...args) => {
+      seen.push(args);
+      const request = args[0];
+      if (request.itemId === "boom") return gatewayOk({ ok: false, error: { code: "forbidden", message: "403 无项目写权限" } });
+      if (request.itemId === "carrier") return gatewayFail("remote_error", "carrier down");
+      return gatewayOk({ ok: true });
+    },
+  }, { status: 0, listProjects: 1, getBoard: 1, moveCard: 1 });
+  const { boardApi } = await applyClient({ face });
+  const ok = await boardApi.moveCard({ projectNumber: 7, itemId: "i1", optionId: "o2" });
+  assert.equal(ok.ok, true, `成功路径 {ok:true}(无 value 键,不进拆包):${JSON.stringify(ok)}`);
+  const business = await boardApi.moveCard({ projectNumber: 7, itemId: "boom", optionId: "o2" });
+  assert.equal(business.ok, false);
+  assert.equal(business.error.code, "forbidden", "业务失败信封透传(code/message 保留)");
+  const carrier = await boardApi.moveCard({ projectNumber: 7, itemId: "carrier", optionId: "o2" });
+  assert.equal(carrier.ok, false);
+  assert.equal(carrier.error.code, "remote_error", "载波失败信封透传");
+  assert.deepEqual(
+    seen.map((args) => args.length),
+    [1, 1, 1],
+    "三次调用全部以恰好 1 个实参到达面",
+  );
+  // 面替身与网关同严:0 实参直接抛(与 listProjects 闸同型)
+  const bare = strictArgumentFace({ moveCard: async () => gatewayOk({ ok: true }) }, { moveCard: 1 });
+  assert.throws(() => bare.moveCard(), /moveCard expected 1 argument\(s\), got 0/, "0 实参调用被参数闸拒绝");
+});
+
+test("S3.5 moveCard:控制器乐观移动 → moveCard 恰好 1 实参、请求形状逐字段(repo 透传)", async () => {
+  const moveCalls = [];
+  const columns = [
+    { optionId: "o1", name: "Todo", items: [{ id: "a1", title: "卡", assignees: [], labels: [], statusOptionId: "o1" }] },
+    { optionId: "o2", name: "Done", items: [] },
+  ];
+  const face = {
+    status: async () => gatewayOk(statusResult()),
+    listProjects: async () => gatewayOk(projectsResult([{ id: "p7", number: 7, title: "Alpha", repo: "octocat/alpha" }])),
+    getBoard: async () => gatewayOk(boardResult({ number: 7, columns, totalCount: 1 })),
+    moveCard: async (request) => {
+      moveCalls.push(request);
+      return gatewayOk({ ok: true });
+    },
+  };
+  const { boardApi, mod } = await applyClient({ face });
+  const controller = mod.internals.createBoardController({
+    getApi: () => boardApi,
+    t: (key) => key,
+    delay: () => Promise.resolve(),
+    scheduleRetry: () => () => {},
+  });
+  controller.start();
+  await flushAsync();
+  assert.equal(controller.getSnapshot().phase, "ready");
+  controller.requestMove({ itemId: "a1", fromOptionId: "o1", toOptionId: "o2" });
+  await flushAsync();
+  const snapshot = controller.getSnapshot();
+  assert.equal(snapshot.pendingMove, null, "成功后 pending 清空");
+  assert.equal(snapshot.board.columns[1].items[0]?.id, "a1", "乐观态维持(卡在目标列)");
+  jsonEqual(
+    moveCalls,
+    [{ repo: "octocat/alpha", projectNumber: 7, itemId: "a1", optionId: "o2" }],
+    "恰好 1 个 request 实参:projectNumber/itemId/optionId 齐全,repo 随仓归属项目透传",
+  );
+  controller.dispose();
+});
+
+test("S3.5 moveCard:调用悬挂 → deadline 到期 remote_timeout,迟到回包被忽略", async () => {
+  const clock = createVirtualClock();
+  let lateResolve;
+  const face = {
+    status: async () => gatewayOk(statusResult()),
+    listProjects: async () => gatewayOk(projectsResult([{ id: "p7", number: 7, title: "Alpha" }])),
+    getBoard: async () => gatewayOk(boardResult({ number: 7, columns: [{ optionId: "o1", name: "Todo", items: [{ id: "a1", title: "卡", assignees: [], labels: [], statusOptionId: "o1" }] }, { optionId: "o2", name: "Done", items: [] }], totalCount: 1 })),
+    moveCard: () => new Promise((resolve) => { lateResolve = resolve; }),
+  };
+  const { boardApi, mod } = await applyClient({ face, clock });
+  const controller = mod.internals.createBoardController({
+    getApi: () => boardApi,
+    t: (key) => key,
+    delay: () => Promise.resolve(),
+    scheduleRetry: () => () => {},
+  });
+  controller.start();
+  await flushAsync();
+  controller.requestMove({ itemId: "a1", fromOptionId: "o1", toOptionId: "o2" });
+  await flushAsync(); // 乐观上板 + moveCard 在途
+  assert.ok(controller.getSnapshot().pendingMove !== null, "乐观移动在途");
+  await clock.advance(20_001); // 越过 REMOTE_CALL_DEADLINE_MS
+  await flushAsync();
+  const snapshot = controller.getSnapshot();
+  assert.equal(snapshot.pendingMove, null, "超时后 pending 复位");
+  assert.equal(snapshot.moveError?.code, "remote_timeout", "超时折成 moveError(视图给「稍后再试」指引)");
+  assert.equal(snapshot.board.columns[0].items[0]?.id, "a1", "回滚到拖拽前快照");
+  lateResolve({ ok: true, value: { ok: true } });
+  await flushAsync();
+  assert.equal(controller.getSnapshot().board.columns[0].items[0]?.id, "a1", "迟到回包不改变已回滚的状态");
+  controller.dispose();
+});
+
 
 
 test("S3.5 服务缺席:ctx.remote 缺失 → boardApi 返回 remote_missing,不抛不挂", async () => {
@@ -352,7 +459,7 @@ test("S3.5 宿主注册:apply 发布 githubKanban 服务,带 v1 Remote 标记与
   assert.equal(Object.isFrozen(service.typertRemote), true, "绑定冻结(protocol bindTypertRemote 形状)");
   const marker = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(service), "@deepseek-ai/dsh-typert-protocol/remote-methods")?.value;
   assert.equal(marker.version, 1);
-  assert.deepEqual(marker.methods.map((entry) => entry.method), ["status", "listProjects", "getBoard"]);
+  assert.deepEqual(marker.methods.map((entry) => entry.method), ["status", "listProjects", "getBoard", "moveCard"], "0.9.0 起宿主带 moveCard 写回方法");
   assert.ok(Object.isFrozen(marker.methods[0]) && Object.isFrozen(marker.methods[0].invocation), "marker 冻结");
   assert.ok(logs.length === 1 && !logs[0].includes("ghp_"), "激活日志不含任何凭据");
 });
