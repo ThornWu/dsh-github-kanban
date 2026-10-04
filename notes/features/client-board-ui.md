@@ -73,3 +73,14 @@
 **修复**:prefs 引入 `v:2` 结构版本标记(writePrefs 落盘带 v);`resolveInitialMode` 只认 v:2 的 theme 为模式,无版本旧值一律回落 auto(跟随 dsh)——忠实还原旧值的实际语义。顺带修掉控制器对已解析模式字符串的二次解析(会把 deps.initialMode 误判为非对象一律落 auto,测试种子全被忽略才暴露)。
 
 **测试**:pure 补迁移断言(无版本旧值/非法/缺席 → auto);react 新增迁移用例(旧值 light + dsh 暗标记 → 生效暗色,证明不再钉死);受影响种子补 v:2。404 全绿。
+
+## 追加(2026-10-04 末):移除手动主题切换按钮,主题恒跟随 dsh(所有者决定)
+
+联动验证稳定后,所有者决定去掉面板上的主题切换按钮 —— 主题唯一行为 = 跟随 dsh 深浅色实时联动。主线实施:
+
+- 移除 ThemeToggle 组件/工具栏挂载/按钮 CSS/themeSwitchTo* 与 themeFollow* 词典键;
+- 移除三态模式机制(MODES/normalizeMode/cycleThemeMode/resolveInitialMode/MODE_SET 转换/setMode、setTheme API/state.mode 字段与 v:2 偏好版本标记);
+- 主题不再持久化(prefs 回到 {savedAt, selectedKey};历史写入的 theme 值自然废弃,无迁移必要);
+- 保留:hostThemeMarker/createHostThemeSource(MutationObserver 实时联动)、THEME_SET 转换(联动唯一入口)、applyHostTheme(start 重挂载对齐)、dispose 断开。
+
+**测试**:smoke 244→241(三态循环/落盘断言 → 无按钮+不落盘断言)、pure 124→121(删三态/MODE_SET)、react 35→33(删循环与迁移用例,联动用例保留)。396 全绿。
