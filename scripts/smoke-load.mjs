@@ -1661,7 +1661,7 @@ const sampleBoard = {
     const stored = JSON.parse(localStorageStub.__store[PREFS_KEY] ?? "{}");
     check(
       "偏好:写回仅含 { savedAt, selectedKey, theme }(0.9.0 起带 UI 主题偏好),不含项目列表/看板/计数",
-      Object.keys(stored).sort().join(",") === "savedAt,selectedKey,theme" && stored.selectedKey === "#9",
+      Object.keys(stored).sort().join(",") === "savedAt,selectedKey,theme,v" && stored.selectedKey === "#9" && stored.v === 2,
       `keys=${Object.keys(stored).join(",")}`,
     );
   } finally {

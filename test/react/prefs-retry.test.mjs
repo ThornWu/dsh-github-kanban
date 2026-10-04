@@ -46,7 +46,8 @@ test("S3.4 偏好:有效的持久化选择被延续(初拉偏好项目),写回�
   assert.deepEqual(boardCalls.map((call) => call.projectNumber), [9], "初拉偏好选中的 #9");
   assert.ok(panel.text().includes("BetaColumn"), "渲染 #9 的看板");
   const stored = JSON.parse(panel.dom.window.localStorage.getItem(PREFS_KEY));
-  assert.deepEqual(Object.keys(stored).sort(), ["savedAt", "selectedKey", "theme"], "0.9.0 起带 theme(UI 偏好);仍不含任何业务数据");
+  assert.deepEqual(Object.keys(stored).sort(), ["savedAt", "selectedKey", "theme", "v"], "0.9.0 起带 theme(UI 偏好)与 v:2 结构版本;仍不含任何业务数据");
+  assert.equal(stored.v, 2, "v:2 起 theme 字段为三态模式(无版本旧值升级时按 auto 处理)");
   assert.equal(stored.selectedKey, "#9");
   await panel.unmount();
 });
@@ -258,21 +259,21 @@ test("0.9.0 主题实时联动:auto 态下 dsh 切换深浅色(body[data-ds-dark
   await panel.unmount();
 });
 
-test("0.9.0 主题:持久化的合法模式延续(auto/light/dark 都尊重),非法存储值回 auto 走联动", async () => {
+test("0.9.0 主题:持久化的合法模式延续(v:2 偏好优先于宿主读数),非法值回 auto 走联动", async () => {
   const { face } = makeFace();
   const darkPanel = await mountPanel({
     face,
-    seedStorage: { [PREFS_KEY]: JSON.stringify({ savedAt: Date.now(), theme: "dark" }) },
+    seedStorage: { [PREFS_KEY]: JSON.stringify({ savedAt: Date.now(), v: 2, theme: "dark" }) },
     domStubs: (dom) => {
       dom.window.matchMedia = (query) => ({ media: query, matches: false }); // 联动读数会说亮色
     },
   });
-  assert.equal(darkPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "dark", "偏好固定 dark 优先于宿主读数(light)");
+  assert.equal(darkPanel.$(".tgk-root").getAttribute("data-tgk-theme"), "dark", "v:2 偏好固定 dark 优先于宿主读数(light)");
   await darkPanel.unmount();
 
   const invalidPanel = await mountPanel({
     face,
-    seedStorage: { [PREFS_KEY]: JSON.stringify({ savedAt: Date.now(), theme: "banana" }) },
+    seedStorage: { [PREFS_KEY]: JSON.stringify({ savedAt: Date.now(), v: 2, theme: "banana" }) },
     domStubs: (dom) => {
       dom.window.matchMedia = (query) => ({ media: query, matches: false });
     },

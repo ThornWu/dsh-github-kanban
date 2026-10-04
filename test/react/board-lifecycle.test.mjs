@@ -794,10 +794,10 @@ test("0.9.0 列头色点:宿主列 color 枚举映射 hex(缺席列灰)", async 
       { optionId: null, color: null, name: "", fallback: "unfiled", items: [card({ id: "a2", title: "未分列卡", optionId: null })] },
     ],
   });
-  // jsdom 无 matchMedia/可判定背景 → 默认检测落到兜底暗色;这里种子 theme=light
-  // (持久化偏好优先)让色值断言确定落在 light 分支。
+  // jsdom 无 matchMedia/可判定背景 → auto 态兜底落到暗色;这里种子 v:2 theme=light
+  // (固定浅色模式优先于联动)让色值断言确定落在 light 分支。
   const panel = await mountPanel({
-    seedStorage: { "@local/thorn-github-kanban/prefs/v1": JSON.stringify({ savedAt: Date.now(), theme: "light" }) },
+    seedStorage: { "@local/thorn-github-kanban/prefs/v1": JSON.stringify({ savedAt: Date.now(), v: 2, theme: "light" }) },
     face: {
       status: async () => gatewayOk(statusResult()),
       listProjects: async () => gatewayOk(projectsResult([{ id: "p7", number: 7, title: "Alpha" }])),

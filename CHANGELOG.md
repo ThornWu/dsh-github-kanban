@@ -6,7 +6,7 @@
 
 产品从「只读 Alpha」推进到「读 + 状态写回」第一步；面板视觉对齐 GitHub Projects 看板。
 
-- 新增主题系统：默认**跟随 dsh 宿主深浅色并实时联动**（`MutationObserver` 监听宿主标记，dsh 设置切换 Light/Dark 面板即时跟随）；工具栏按钮在 跟随 / 浅色 / 暗色 三态间循环，选择持久化（30 天）。
+- 新增主题系统：默认**跟随 dsh 宿主深浅色并实时联动**（`MutationObserver` 监听宿主标记，dsh 设置切换 Light/Dark 面板即时跟随）；工具栏按钮在 跟随 / 浅色 / 暗色 三态间循环，选择持久化（30 天）。偏好带 `v:2` 结构版本：旧版双态按钮写入的主题值升级后按「跟随 dsh」处理，不会被误读为固定主题。
 - 看板样式贴近 GitHub Projects：列头色点与计数徽标、卡片圆角/悬停阴影、标签彩色 pill、负责人头像。
 - 卡片可拖拽到其他列：先乐观更新，再调用宿主 `moveCard` 写回 GitHub（仅 `updateProjectV2ItemFieldValue` 更新 Status）；写回失败自动回滚到原列并显示内联错误。宿主日志对写回凭据同样脱敏。
 - 写回不支持：列内排序（GitHub Projects v2 公开 API 无公开排序 mutation）、新建/删除卡片、编辑其他字段、触屏拖拽（HTML5 拖放的浏览器限制）。

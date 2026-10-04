@@ -339,10 +339,13 @@ test("0.9.0 主题模式三态:normalizeMode 合法值放行,cycleThemeMode 循�
   assert.equal(cycleThemeMode("light"), "dark");
   assert.equal(cycleThemeMode("dark"), "auto");
   assert.equal(cycleThemeMode("banana"), "light", "非法值按 auto 起步循环");
-  assert.equal(resolveInitialMode("dark"), "dark", "持久化模式(合法三值)优先");
-  assert.equal(resolveInitialMode("auto"), "auto", "显式 auto 也是合法持久化值");
-  assert.equal(resolveInitialMode("nonsense"), "auto", "非法持久化值回 auto");
-  assert.equal(resolveInitialMode(undefined), "auto", "缺席回 auto(跟随 dsh 是默认)");
+  assert.equal(resolveInitialMode({ v: 2, theme: "dark" }), "dark", "v2 偏好的合法三值优先");
+  assert.equal(resolveInitialMode({ v: 2, theme: "auto" }), "auto", "显式 auto 也是合法持久化值");
+  assert.equal(resolveInitialMode({ v: 2, theme: "nonsense" }), "auto", "v2 但值非法回 auto");
+  assert.equal(resolveInitialMode({ savedAt: Date.now(), theme: "light" }), "auto", "无版本的旧值(旧版双态按钮的一次切换)不当作钉死,回 auto 跟随");
+  assert.equal(resolveInitialMode(null), "auto", "缺席偏好回 auto(跟随 dsh 是默认)");
+  assert.equal(resolveInitialMode(undefined), "auto");
+  assert.equal(resolveInitialMode("dark"), "auto", "非对象入参防御性回 auto");
 });
 
 test("0.9.0 hostThemeMarker:dsh 标记体系(body[data-ds-dark-theme] / html[data-ds-theme-source])判定,双缺席 = 非 dsh 环境 null", () => {
